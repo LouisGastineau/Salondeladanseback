@@ -1,0 +1,80 @@
+name: Test and deploy API
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: salon-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: test-root
+          MARIADB_DATABASE: salon_test
+          MARIADB_USER: salon_test
+          MARIADB_PASSWORD: test-password
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: mariadb
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: salon_test
+      DB_USERNAME: salon_test
+      DB_PASSWORD: test-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo_mysql, pdo_sqlite, gd, zip, intl, dom
+          coverage: none
+      - run: composer install --prefer-dist --no-interaction
+      - run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan test
+          composer test:integration
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://vps123924.serveur-vps.net
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload and deploy this commit
+        run: |
+          git archive --format=tar.gz --output="$RUNNER_TEMP/$GITHUB_SHA.tar.gz" HEAD
+          scp -o BatchMode=yes "$RUNNER_TEMP/$GITHUB_SHA.tar.gz" deploy@vps123924.serveur-vps.net:/var/www/back/incoming/
+          ssh -o BatchMode=yes deploy@vps123924.serveur-vps.net "/usr/local/bin/salon-deploy $GITHUB_SHA"
+      - name: Check unauthenticated API
+        run: |
+          status=$(curl --silent --show-error -o /tmp/me.json -w '%{http_code}' -H 'Accept: application/json' https://vps123924.serveur-vps.net/api/me)
+          test "$status" = 401
