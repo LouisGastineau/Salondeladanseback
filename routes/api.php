@@ -31,6 +31,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::post('reservations', [AdminController::class, 'storeReservation']);
         Route::delete('reservations/{id}', [AdminController::class, 'deleteReservation'])->whereNumber('id');
         Route::post('invitation-codes', [AdminController::class, 'invitations']);
+        Route::post('invitations', [AdminController::class, 'sendInvitation'])->middleware('throttle:invitations');
         Route::get('export', [AdminController::class, 'export']);
     });
 });

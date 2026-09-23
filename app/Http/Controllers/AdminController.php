@@ -7,6 +7,7 @@ use App\Http\Requests\AdminUpdateUserRequest;
 use App\Http\Requests\AdminUserIndexRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
+use App\Http\Requests\SendInvitationRequest;
 use App\Http\Resources\CreneauResource;
 use App\Http\Resources\InvitationCodeResource;
 use App\Http\Resources\ReservationResource;
@@ -14,6 +15,7 @@ use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Services\AdminService;
 use App\Services\ExportService;
+use App\Services\InvitationService;
 use App\Services\PlanningService;
 use App\Services\ReservationService;
 use Illuminate\Http\Request;
@@ -71,6 +73,13 @@ class AdminController extends Controller
     public function invitations(CreateInvitationCodesRequest $request, AdminService $service)
     {
         return InvitationCodeResource::collection($service->invitations($request->user(), $request->integer('nombre')))
+            ->response()->setStatusCode(201);
+    }
+
+    public function sendInvitation(SendInvitationRequest $request, InvitationService $service)
+    {
+        return (new InvitationCodeResource($service->send($request->user(), $request->validated('email'))))
+            ->additional(['message' => 'Invitation transmise au service d’envoi.'])
             ->response()->setStatusCode(201);
     }
 

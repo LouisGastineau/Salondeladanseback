@@ -5,6 +5,7 @@ use App\Models\Edition;
 use App\Models\InvitationCode;
 use App\Models\Reservation;
 use App\Models\User;
+use App\Mail\VolunteerInvitation;
 use App\Services\ReservationService;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -13,12 +14,16 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 require __DIR__.'/../vendor/autoload.php';
 $app = require __DIR__.'/../bootstrap/app.php';
+// Configure the limiter before providers resolve it, so repeated runs never share counters.
+$app->beforeBootstrapping(\Illuminate\Foundation\Bootstrap\BootProviders::class,
+    fn () => config(['cache.default' => 'array', 'cache.limiter' => 'array']));
 $app->make(ConsoleKernel::class)->bootstrap();
 $config = config('database.connections.'.config('database.default'));
 $prefix = 't'.bin2hex(random_bytes(3)).'_';
@@ -228,6 +233,39 @@ try {
         $expect(422, $api('POST', '/api/login', ['email' => 'throttle@example.test', 'password' => 'wrong'], headers: ['REMOTE_ADDR' => '127.0.9.1']), 'Failed login throttling');
     }
     $expect(429, $api('POST', '/api/login', ['email' => 'throttle@example.test', 'password' => 'wrong'], headers: ['REMOTE_ADDR' => '127.0.9.1']), 'Login rate limited');
+
+    $expect(401, $api('POST', '/api/admin/invitations', ['email' => 'invite@example.test']), 'Anonymous cannot send invitations');
+    $expect(403, $api('POST', '/api/admin/invitations', ['email' => 'invite@example.test'], $token), 'Volunteer cannot send invitations');
+    $expect(422, $api('POST', '/api/admin/invitations', ['email' => 'invalid'], $adminToken), 'Invitation email validation');
+    $expect(422, $api('POST', '/api/admin/invitations', ['email' => $user->fresh()->email], $adminToken), 'Existing account cannot be invited');
+    $originalMailer = config('mail.default');
+    $originalMailManager = Mail::getFacadeRoot();
+    try {
+        config(['mail.default' => 'log']);
+        $before = InvitationCode::count();
+        $expect(503, $api('POST', '/api/admin/invitations', ['email' => 'invite@example.test'], $adminToken), 'Logging is not delivery');
+        $check(InvitationCode::count() === $before, 'No code generated without a delivery transport');
+
+        config(['mail.default' => 'smtp']);
+        Mail::fake();
+        $sent = $expect(201, $api('POST', '/api/admin/invitations', ['email' => ' INVITE@example.test '], $adminToken), 'Send invitation')[1]['data'];
+        Mail::assertSent(VolunteerInvitation::class, fn ($mail) => $mail->hasTo('invite@example.test') && $mail->invitationCode === $sent['code']);
+        $check(InvitationCode::findOrFail($sent['id'])->isActive, 'Sent code activated');
+        $check(str_contains((new VolunteerInvitation($sent['code']))->render(), $sent['code']), 'Email contains generated code');
+        $expect(201, $api('POST', '/api/register', array_replace($payload, ['email' => 'invite@example.test', 'code_invitation' => $sent['code']])), 'Emailed code permits registration');
+        $check(! InvitationCode::findOrFail($sent['id'])->isActive, 'Emailed code is consumed once');
+
+        Mail::swap($originalMailManager);
+        Mail::shouldReceive('to')->once()->with('failure@example.test')->andReturnSelf();
+        Mail::shouldReceive('send')->once()->andThrow(new RuntimeException('secret transport details'));
+        $failure = $expect(503, $api('POST', '/api/admin/invitations', ['email' => 'failure@example.test'], $adminToken), 'Mail transport failure');
+        $check(! str_contains($failure[2], 'secret transport details'), 'No transport details exposed');
+        $check(! InvitationCode::orderByDesc('id')->firstOrFail()->isActive, 'Failed delivery code is unusable');
+        $expect(422, $api('POST', '/api/register', array_replace($payload, ['email' => 'failure@example.test', 'code_invitation' => InvitationCode::orderByDesc('id')->firstOrFail()->code])), 'Failed delivery cannot unlock registration');
+    } finally {
+        Mail::swap($originalMailManager);
+        config(['mail.default' => $originalMailer]);
+    }
 } finally {
     // Delete only data in this run's uniquely prefixed tables before rollback.
     foreach (['personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {

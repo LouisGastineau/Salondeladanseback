@@ -132,6 +132,61 @@ $mission->creneaux()->create(['jour' => '2026-10-09', 'heure_debut' => '09:00:00
 
 ## Erreurs et tests
 
+### Envoyer une invitation par email
+
+`POST /api/admin/invitations` exige un token administrateur. Le frontend envoie :
+
+```js
+const response = await fetch(`${API_URL}/admin/invitations`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ email: 'benevole@example.com' }),
+});
+const result = await response.json();
+if (!response.ok) throw new Error(result.message ?? 'Invitation impossible');
+```
+
+Avec `API_URL=https://vps123924.serveur-vps.net/api`. Réponse `201` :
+
+```json
+{
+  "data": { "id": 42, "code": "EXEMPLE_DE_CODE", "isActive": true },
+  "message": "Invitation transmise au service d’envoi."
+}
+```
+
+Le service génère un code unique, envoie le mail de façon synchrone et active le code après acceptation par le transport mail. L’acceptation ne garantit pas l’arrivée en boîte de réception : les rejets ultérieurs et le dossier spam dépendent du fournisseur. Aucun job ni aucune queue.
+
+Une adresse déjà inscrite est refusée (`422`). Sans transport mail réel, ou en cas d’échec d’envoi, la route renvoie `503` ; aucun nouveau code utilisable n’est laissé après un échec du transport. Limite : 10 requêtes par minute et par administrateur. Un nouvel appel génère un nouveau code : ne pas réessayer automatiquement après une réponse réseau incertaine.
+
+L’ancienne route `POST /api/admin/invitation-codes` avec `{ "nombre": 5 }` reste disponible pour générer des codes sans envoyer de mail. Les codes restent à usage unique et ne sont pas liés à l’adresse destinataire dans le schéma MVP.
+
+Configuration à renseigner dans `/var/www/back/shared/.env` sur le VPS :
+
+```dotenv
+MAIL_MAILER=smtp
+MAIL_SCHEME=smtp
+MAIL_HOST=<serveur du fournisseur>
+MAIL_PORT=587
+MAIL_USERNAME=<identifiant SMTP>
+MAIL_PASSWORD=<mot de passe SMTP>
+MAIL_FROM_ADDRESS=<adresse expéditeur validée>
+MAIL_FROM_NAME="Salon de la Danse"
+```
+
+Pour un fournisseur utilisant TLS implicite sur le port 465, utiliser `MAIL_SCHEME=smtps`. Le port 587 utilise STARTTLS selon la configuration du fournisseur. Après modification :
+
+```sh
+sudo -u deploy bash -c 'cd /var/www/back/current && php artisan config:cache'
+systemctl reload php8.2-fpm
+```
+
+Les identifiants SMTP doivent rester sur le serveur, jamais dans les variables Vite ou GitHub. Tant que `MAIL_MAILER=log`, seule la génération sans mail est utilisable.
+
 - `401` : token absent, invalide, expiré ou révoqué.
 - `403` : accès administrateur refusé.
 - `404` : ressource absente, appartenant à un autre bénévole ou mission sensible inaccessible.
@@ -147,7 +202,7 @@ php tests/schema-smoke.php
 
 Les tests utilisent des tables MariaDB avec un préfixe aléatoire, puis les suppriment. Les tests de concurrence lancent deux processus PHP indépendants pour la dernière place, le quota individuel, les horaires en conflit, le code partagé et l’email partagé. Aucun `migrate:fresh` n’est exécuté sur la base réelle.
 
-La suite API a passé **123 contrôles**. Le rendu PDF de test a également été contrôlé visuellement et son texte vérifié pour l’absence de mission sensible.
+La suite API couvre les règles de réservation, les accès et les invitations par email (envoi simulé et échec du transport). Le rendu PDF de test a également été contrôlé visuellement et son texte vérifié pour l’absence de mission sensible.
 
 Nginx pointe vers le dossier `public` de Laravel. HTTPS utilise un certificat Let's Encrypt avec renouvellement automatique et rechargement de Nginx après renouvellement. HTTP redirige vers HTTPS. Le site Nginx par défaut n’a pas été remplacé : un hôte dédié au nom du VPS a été ajouté.
 
