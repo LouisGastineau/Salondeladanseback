@@ -1,0 +1,154 @@
+# Backend Salon de la Danse
+
+Backend récupéré localement depuis la dernière archive du VPS. Laravel 12 / PHP 8.2 / MariaDB ; Sanctum par Bearer token. Voir `Readme.md` pour démarrer le projet local. Les informations de déploiement VPS ci-dessous décrivent l'installation historique et ne garantissent pas sa disponibilité actuelle.
+
+## Connexion du front
+
+Base de l’API locale : `http://127.0.0.1:8000/api`.
+
+```js
+const response = await fetch(`${import.meta.env.VITE_API_URL}/creneaux`, {
+  headers: {
+    Accept: 'application/json',
+    Authorization: `Bearer ${token}`,
+  },
+});
+const result = await response.json();
+```
+
+Dans le `.env` du front :
+
+```dotenv
+VITE_API_URL=http://127.0.0.1:8000/api
+```
+
+CORS autorise `http://localhost:5173`, sans cookies. Pour ajouter une origine, renseigner `FRONTEND_URL` dans le `.env` du backend, avec plusieurs origines séparées par des virgules, puis `php artisan config:clear`. Les chemins de photos renvoyés sont relatifs au domaine de l’API ; les télécharger avec le Bearer token via `fetch`, puis utiliser un object URL côté front.
+
+## Authentification
+
+`POST /register` accepte :
+
+```json
+{
+  "nom": "Dupont",
+  "prenom": "Élodie",
+  "email": "elodie@example.com",
+  "telephone": "0600000000",
+  "password": "un-mot-de-passe-personnel",
+  "password_confirmation": "un-mot-de-passe-personnel",
+  "code_invitation": "CODE_FOURNI_PAR_ADMIN",
+  "isMineur": false
+}
+```
+
+Le champ `photo` est facultatif : utiliser `multipart/form-data` pour envoyer un fichier JPEG, PNG ou WebP, limité à 2 Mio et 4096 × 4096 pixels. En multipart, envoyer `isMineur` sous forme `0` ou `1`. Sans photo, le chemin stocké est une chaîne vide et `photo_url` vaut `null`.
+
+`POST /login` accepte `email` et `password`. Ces deux endpoints renvoient :
+
+```json
+{
+  "data": {
+    "user": {"id": 1, "nom": "Dupont", "prenom": "Élodie", "email": "elodie@example.com", "telephone": "0600000000", "role": "benevole", "isMineur": false, "statut_planning": "brouillon", "photo_url": null},
+    "token": "TOKEN_SANCTUM",
+    "token_type": "Bearer"
+  }
+}
+```
+
+Les tokens expirent après 7 jours. `POST /logout` révoque uniquement le token courant et répond `204`. `GET /me` renvoie le profil courant dans `data`. Il n’existe aucune route de modification personnelle pour le bénévole.
+
+## Endpoints bénévoles
+
+Tous nécessitent `Authorization: Bearer ...`.
+
+| Méthode | Chemin | Entrée / résultat |
+| --- | --- | --- |
+| GET | `/me` | Profil courant |
+| GET | `/me/photo` | Photo privée, `404` si absente |
+| GET | `/creneaux` | Filtres `jour=YYYY-MM-DD`, `mission_id`, `page`, `per_page` (1–100) |
+| POST | `/reservations` | JSON `{"creneau_id": 12}` ; création `201` |
+| DELETE | `/reservations/{id}` | Suppression `204` |
+| GET | `/reservations` | Réservations publiques du bénévole |
+| GET | `/planning` | Même résultat que `/reservations` |
+| POST | `/planning/valider` | Valide atomiquement le planning et ses réservations |
+| GET | `/planning/pdf` | Téléchargement PDF du planning public personnel |
+
+Chaque créneau de la liste fournit `id`, `jour`, `heure_debut`, `heure_fin`, `capacite_max`, `places_restantes` et `mission` (`id`, `edition_id`, `nom`). Les listes paginées utilisent `data`, `links` et `meta`. Une réservation fournit `id`, `statut` et `creneau`, sans identité d’un autre bénévole.
+
+## Endpoints administrateur
+
+Toutes les routes `/admin/*` sont protégées par `auth:sanctum` puis `role:admin`.
+
+| Méthode | Chemin | Entrée / résultat |
+| --- | --- | --- |
+| GET | `/admin/users` | Recherche `q` sur nom/prénom/email ; filtres `role`, `statut_planning`, `isMineur=0|1`, pagination |
+| PATCH | `/admin/users/{id}` | `nom`, `prenom`, `email`, `telephone`, `isMineur`, `photo` |
+| GET | `/admin/users/{id}/photo` | Photo privée du compte |
+| GET | `/admin/users/{id}/planning` | Inclut les missions sensibles |
+| POST | `/admin/users/{id}/planning/valider` | Validation par un admin |
+| POST | `/admin/users/{id}/planning/deverrouiller` | Repasse le planning et les réservations en brouillon |
+| GET | `/admin/creneaux` | Inclut les missions sensibles ; mêmes filtres que la liste bénévole |
+| POST | `/admin/reservations` | JSON `{"user_id": 5, "creneau_id": 12}` ; `201` |
+| DELETE | `/admin/reservations/{id}` | Suppression y compris planning validé ; `204` |
+| POST | `/admin/invitation-codes` | JSON `{"nombre": 10}` ; renvoie les nouveaux codes, entre 1 et 200 |
+| GET | `/admin/export` | CSV UTF-8 avec BOM et séparateur `;`, compatible Excel ; mêmes filtres utilisateurs |
+
+Pour modifier une photo avec PHP 8.2, envoyer un `POST` multipart vers `/admin/users/{id}` avec `_method=PATCH` ; Laravel traite alors la requête comme un PATCH. Les rôles, mots de passe et statuts ne sont pas modifiables par ce endpoint.
+
+## Règles appliquées
+
+- Code d’invitation vérifié et verrouillé dans la transaction d’inscription ; création du compte, consommation du code et création du token atomiques. L’email est normalisé en minuscules et reste unique en base.
+- Une unique édition doit être active. Les réservations consultées et modifiées concernent cette édition. En l’absence d’édition active, ou si plusieurs sont actives, les opérations de planning répondent `409`.
+- Maximum 3 réservations sur le week-end de l’édition, toutes missions confondues. Minimum 1 au moment de valider. Un brouillon peut être vide.
+- Les intervalles horaires d’une même journée ne peuvent pas se chevaucher, même partiellement et même sur des missions différentes.
+- Trois créneaux consécutifs sont interdits, quelle que soit l’ordre d’ajout. « Consécutifs » signifie que l’heure de fin du précédent égale l’heure de début du suivant. Les créneaux doivent commencer et finir le même jour.
+- Brouillons et réservations validées occupent tous une place. Verrouillage du bénévole puis du créneau, lectures SQL verrouillées et reprises sur deadlock pour gérer la concurrence MariaDB.
+- Le bénévole ne modifie plus un planning validé. L’admin peut intervenir, mais respecte les capacités et contraintes horaires. Il doit déverrouiller un planning avant de supprimer sa dernière réservation.
+- Les missions sensibles sont absentes des réponses bénévoles, même lorsqu’elles leur sont attribuées par un admin. Elles comptent néanmoins dans les limites de planning et ne figurent pas dans le PDF public. Elles restent visibles dans le back-office et le CSV admin.
+- Photos stockées sur le disque privé ; aucune exposition directe des modèles ni des secrets. Le CSV neutralise les valeurs interprétables comme formules Excel. Le PDF échappe les textes et désactive les ressources distantes et l’exécution de PHP/JavaScript.
+
+Le schéma conserve un statut de planning global sur `users`. Cette version vise une édition active ; le passage à une autre édition et l’archivage de statuts par édition ne sont pas automatisés.
+
+## Préparer les données réelles
+
+Aucun compte réel ni calendrier d’événement n’a été créé par les tests.
+
+Créer le premier administrateur sur le VPS :
+
+```sh
+cd /var/www/back
+php artisan salon:admin votre-email@example.com
+```
+
+La commande demande nom, prénom, téléphone et mot de passe sans afficher ce dernier. Se connecter ensuite avec `/api/login`, puis générer les invitations via `/api/admin/invitation-codes`.
+
+Les éditions, missions et créneaux doivent être renseignés avec les dates et capacités réelles dans la base ou via `php artisan tinker`. Les CRUD de configuration de l’événement ne faisaient pas partie des endpoints demandés. Exemple de structure dans Tinker, à adapter avant exécution :
+
+```php
+$edition = App\Models\Edition::create(['nom' => 'Salon de la Danse', 'date_debut' => '2026-10-09', 'date_fin' => '2026-10-11', 'isActive' => true]);
+$mission = $edition->missions()->create(['nom' => 'Accueil', 'isSensible' => false]);
+$mission->creneaux()->create(['jour' => '2026-10-09', 'heure_debut' => '09:00:00', 'heure_fin' => '11:00:00', 'capacite_max' => 10]);
+```
+
+## Erreurs et tests
+
+- `401` : token absent, invalide, expiré ou révoqué.
+- `403` : accès administrateur refusé.
+- `404` : ressource absente, appartenant à un autre bénévole ou mission sensible inaccessible.
+- `409` : conflit avec une règle métier.
+- `422` : validation d’entrée ; détail dans `errors`.
+- `429` : limitation de fréquence.
+- `500` : message générique, aucun détail technique dans la réponse API.
+
+```sh
+php tests/api-smoke.php
+php tests/schema-smoke.php
+```
+
+Les tests utilisent des tables MariaDB avec un préfixe aléatoire, puis les suppriment. Les tests de concurrence lancent deux processus PHP indépendants pour la dernière place, le quota individuel, les horaires en conflit, le code partagé et l’email partagé. Aucun `migrate:fresh` n’est exécuté sur la base réelle.
+
+La suite API a passé **123 contrôles**. Le rendu PDF de test a également été contrôlé visuellement et son texte vérifié pour l’absence de mission sensible.
+
+Nginx pointe vers le dossier `public` de Laravel. HTTPS utilise un certificat Let's Encrypt avec renouvellement automatique et rechargement de Nginx après renouvellement. HTTP redirige vers HTTPS. Le site Nginx par défaut n’a pas été remplacé : un hôte dédié au nom du VPS a été ajouté.
+
+Sauvegarde avant modifications : `/home/deploy/back-before-api-VL0s8e/source.tar.gz`.
