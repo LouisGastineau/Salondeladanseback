@@ -6,7 +6,7 @@ PHP 8.2 FPM, Nginx, MariaDB 10.11 and Laravel 12. MariaDB listens on localhost o
 
 ## Deployment
 
-Push to `main` in `LouisGastineau/Salondeladanse`. GitHub Actions runs PHPUnit and the MariaDB integration tests, including concurrent reservations. Only a successful test job can deploy. Pull requests run tests without deploying. You can also run the workflow manually on main.
+Push to `main` in `LouisGastineau/Salondeladanseback`. GitHub Actions runs PHPUnit and the MariaDB integration tests, including concurrent reservations. Only a successful test job can deploy. Pull requests run tests without deploying. You can also run the workflow manually on main.
 
 Repository Actions secrets:
 
