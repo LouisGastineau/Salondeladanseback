@@ -209,9 +209,56 @@ Avec `API_URL=https://vps123924.serveur-vps.net/api`. Réponse `201` :
 
 Le service génère un code unique, envoie le mail de façon synchrone et active le code après acceptation par le transport mail. L’acceptation ne garantit pas l’arrivée en boîte de réception : les rejets ultérieurs et le dossier spam dépendent du fournisseur. Aucun job ni aucune queue.
 
-Une adresse déjà inscrite est refusée (`422`). Sans transport mail réel, ou en cas d’échec d’envoi, la route renvoie `503` ; aucun nouveau code utilisable n’est laissé après un échec du transport. Limite : 10 requêtes par minute et par administrateur. Un nouvel appel génère un nouveau code : ne pas réessayer automatiquement après une réponse réseau incertaine.
+Une adresse déjà inscrite est refusée (`422`). Sans transport mail réel, ou en cas d’échec d’envoi, la route renvoie `503` ; aucun nouveau code utilisable n’est laissé après un échec du transport. Limite : 10 requêtes par minute et par administrateur. Si une invitation est déjà marquée `envoye` pour cette adresse, un nouvel appel renvoie le même code sans nouvel email. Un échec peut être retenté avec le même code. Un envoi `en_cours` est refusé avec `409` : s’il persiste après interruption du processus, un administrateur doit vérifier l’état chez Brevo avant toute reprise.
 
-L’ancienne route `POST /api/admin/invitation-codes` avec `{ "nombre": 5 }` reste disponible pour générer des codes sans envoyer de mail. Les codes restent à usage unique et ne sont pas liés à l’adresse destinataire dans le schéma MVP.
+L’ancienne route `POST /api/admin/invitation-codes` avec `{ "nombre": 5 }` reste disponible pour générer des codes sans envoyer de mail. Les invitations envoyées enregistrent désormais `email`, `statut_envoi` (`en_cours`, `envoye`, `echec`) et `envoye_at`. Les anciennes invitations et les codes générés sans email gardent ces champs à `null`. La déduplication ne peut pas identifier les destinataires d’envois antérieurs à cette migration. Le code reste à usage unique ; l’adresse d’inscription n’est pas contrainte à être celle du destinataire.
+
+### Liste et import CSV des invitations
+
+`GET /api/admin/invitations` retourne une liste paginée d’invitations, incluant les codes, le destinataire, `isActive` et le statut d’envoi. Filtres : `email` (adresse exacte), `statut_envoi`, `isActive`, `page`, `per_page` (maximum 100). Accès admin uniquement.
+
+`POST /api/admin/invitations/import` accepte un formulaire multipart avec :
+
+- `file` : fichier `.csv` UTF-8, maximum 256 Kio et 200 lignes de données ;
+- `offset` : position de départ, 0 par défaut ;
+- `limit` : maximum de lignes à traiter, 20 par défaut et au maximum.
+
+Les séparateurs virgule et point-virgule sont acceptés, ainsi que le BOM UTF-8 d’Excel. Un fichier à une seule colonne peut ne pas avoir d’en-tête. Pour plusieurs colonnes, un en-tête `email` est obligatoire ; les autres colonnes sont ignorées. Les lignes vides sont ignorées. Exemple :
+
+```csv
+email
+alice@example.com
+bob@example.com
+```
+
+Chaque ligne traitée apparaît dans `data` sous la forme `{ ligne, email, statut, message }`. Statuts : `envoye`, `deja_invite`, `deja_inscrit`, `doublon`, `invalide`, `en_cours`, `echec`. `ligne` désigne le numéro d’enregistrement CSV, en-tête et lignes vides compris. La réponse `200` fournit un bilan : elle ne signifie pas que toutes les adresses ont été envoyées ; vérifier chaque statut.
+
+`meta` contient `total`, `offset`, `traites`, `next_offset` et les compteurs `resultats` du lot. Le serveur peut traiter moins de `limit` lignes pour limiter la durée de la requête. Tant que `next_offset` n’est pas `null`, envoyer le **même fichier** avec cette nouvelle position. Cela permet d’importer les 130 bénévoles sans queue ni requête longue :
+
+```js
+async function importerInvitations(file, token, onBatch) {
+  let offset = 0;
+  do {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('offset', String(offset));
+    form.append('limit', '20');
+    const response = await fetch(`${API_URL}/admin/invitations/import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      body: form, // Le navigateur définit Content-Type et la boundary multipart.
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? 'Import impossible');
+    onBatch(result); // Afficher et conserver le bilan de chaque lot.
+    offset = result.meta.next_offset;
+  } while (offset !== null);
+}
+```
+
+Limite : 10 requêtes d’import par minute et par administrateur. Sur `429`, conserver l’offset courant et attendre le délai `Retry-After`. Pour retenter les échecs, réimporter le CSV depuis le début : les invitations déjà marquées `envoye` ne sont pas renvoyées. SMTP ne garantit toutefois pas un envoi exactement une fois après une coupure réseau à l’instant de l’acceptation ; contrôler chez Brevo les cas incertains. `envoye` signifie accepté par le transport, pas livraison confirmée dans la boîte de réception.
+
+Le fichier entier est analysé avant le premier envoi du lot : un fichier trop long, vide ou mal encodé est refusé avec `422` sans envoi. Les adresses invalides, doublons et comptes existants sont signalés ligne par ligne et n’empêchent pas les autres envois. Les tests automatisés utilisent un transport simulé.
 
 Configuration à renseigner dans `/var/www/back/shared/.env` sur le VPS :
 

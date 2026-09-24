@@ -17,6 +17,9 @@ class InvitationCode extends Model
     protected $fillable = [
         'code',
         'isActive',
+        'email',
+        'statut_envoi',
+        'envoye_at',
     ];
 
     protected $hidden = ['code'];
@@ -26,6 +29,7 @@ class InvitationCode extends Model
         return [
             'isActive' => 'boolean',
             'created_at' => 'datetime',
+            'envoye_at' => 'datetime',
         ];
     }
 

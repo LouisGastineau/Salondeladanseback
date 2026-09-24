@@ -314,6 +314,69 @@ try {
         $check(! str_contains($failure[2], 'secret transport details'), 'No transport details exposed');
         $check(! InvitationCode::orderByDesc('id')->firstOrFail()->isActive, 'Failed delivery code is unusable');
         $expect(422, $api('POST', '/api/register', array_replace($payload, ['email' => 'failure@example.test', 'code_invitation' => InvitationCode::orderByDesc('id')->firstOrFail()->code])), 'Failed delivery cannot unlock registration');
+        Mail::swap($originalMailManager);
+        Mail::fake();
+        $csvFile = fn ($text) => UploadedFile::fake()->createWithContent('invitations.csv', $text);
+        $csvText = "\xEF\xBB\xBFnom;email\nAlice; CSV-A@example.test \nDup;csv-a@example.test\nBad;not-an-email\nMember;".$user->fresh()->email."\nBob;csv-b@example.test\n";
+        $expect(401, $api('POST', '/api/admin/invitations/import', files: ['file' => $csvFile($csvText)]), 'CSV requires authentication');
+        $expect(403, $api('POST', '/api/admin/invitations/import', token: $token, files: ['file' => $csvFile($csvText)]), 'CSV admin only');
+        $expect(422, $api('POST', '/api/admin/invitations/import', token: $adminToken), 'CSV required');
+        $before = InvitationCode::count();
+        $csv = $expect(200, $api('POST', '/api/admin/invitations/import', ['limit' => 4], $adminToken, files: ['file' => $csvFile($csvText)]), 'CSV first chunk')[1];
+        $check(array_column($csv['data'], 'statut') === ['envoye', 'doublon', 'invalide', 'deja_inscrit'], 'CSV reports individual outcomes');
+        $check($csv['meta']['total'] === 5 && $csv['meta']['next_offset'] === 4, 'CSV continuation offset');
+        $check(InvitationCode::count() === $before + 1, 'Only eligible addresses generate codes');
+        Mail::assertSent(VolunteerInvitation::class, 1);
+        $again = $expect(200, $api('POST', '/api/admin/invitations/import', ['limit' => 4], $adminToken, files: ['file' => $csvFile($csvText)]), 'Repeated CSV')[1];
+        $check($again['data'][0]['statut'] === 'deja_invite', 'Repeated CSV does not resend');
+        Mail::assertSent(VolunteerInvitation::class, 1);
+        $last = $expect(200, $api('POST', '/api/admin/invitations/import', ['offset' => 4], $adminToken, files: ['file' => $csvFile($csvText)]), 'CSV next chunk')[1];
+        $check($last['meta']['next_offset'] === null && $last['data'][0]['statut'] === 'envoye', 'CSV completed');
+        Mail::assertSent(VolunteerInvitation::class, 2);
+        $record = InvitationCode::where('email', 'csv-a@example.test')->firstOrFail();
+        $reused = app(App\Services\InvitationService::class)->send($admin, 'CSV-A@example.test');
+        $check($reused->id === $record->id && $reused->envoye_at !== null, 'Individual send reuses delivered invitation');
+        Mail::assertSent(VolunteerInvitation::class, 2);
+        $listing = $expect(200, $api('GET', '/api/admin/invitations?email=csv-a%40example.test&statut_envoi=envoye', token: $adminToken), 'Invitation listing')[1];
+        $check($listing['meta']['total'] === 1 && $listing['data'][0]['email'] === 'csv-a@example.test', 'Invitation listing filters');
+        $expect(403, $api('GET', '/api/admin/invitations', token: $token), 'Invitation identities private');
+
+        $csvService = app(App\Services\InvitationCsvService::class);
+        foreach (["email\n", "name,address\nX,y@example.test\n", "email\n\xFF@example.test", "email\n".str_repeat("x@example.test\n", 201)] as $invalidCsv) {
+            try {
+                $csvService->import($admin, $csvFile($invalidCsv), 0, 20);
+                throw new RuntimeException('Invalid CSV was accepted');
+            } catch (Illuminate\Validation\ValidationException $expected) {
+                $check(isset($expected->errors()['file']), 'Invalid CSV rejected before sending');
+            }
+        }
+        Mail::assertSent(VolunteerInvitation::class, 2);
+        $plain = $csvService->import($admin, $csvFile("csv-c@example.test\n\ncsv-c@example.test\n"), 0, 20);
+        $check(array_column($plain['rows'], 'statut') === ['envoye', 'doublon'], 'Single column CSV without header');
+        $quoted = $csvService->import($admin, $csvFile("nom,email\n\"Name, with comma\",csv-d@example.test\n"), 0, 20);
+        $check($quoted['rows'][0]['statut'] === 'envoye', 'Quoted CSV fields');
+        InvitationCode::create(['code' => 'CSV-PENDING', 'email' => 'pending@example.test', 'statut_envoi' => 'en_cours', 'isActive' => false]);
+        $pending = $csvService->import($admin, $csvFile("email\npending@example.test\n"), 0, 20);
+        $check($pending['rows'][0]['statut'] === 'en_cours', 'Pending invitation is not sent twice');
+
+        Mail::swap($originalMailManager);
+        Mail::shouldReceive('to')->once()->with('csv-failure@example.test')->andReturnSelf();
+        Mail::shouldReceive('send')->once()->andThrow(new RuntimeException('SMTP secret'));
+        $partial = $csvService->import($admin, $csvFile("email\ncsv-failure@example.test\ninvalid\n"), 0, 20);
+        $check(array_column($partial['rows'], 'statut') === ['echec', 'invalide'], 'Partial failure returns report');
+        $failed = InvitationCode::where('email', 'csv-failure@example.test')->firstOrFail();
+        $check(! $failed->isActive && $failed->statut_envoi === 'echec', 'Failed CSV invitation remains inactive');
+        Mail::swap($originalMailManager);
+        Mail::fake();
+        $retry = $csvService->import($admin, $csvFile("email\ncsv-failure@example.test\n"), 0, 20);
+        $check($retry['rows'][0]['statut'] === 'envoye' && $failed->fresh()->isActive, 'Failed invitation can be retried');
+        $check(InvitationCode::where('email', 'csv-failure@example.test')->count() === 1, 'Retry reuses a single code');
+        $invitationRace = $race([
+            ['mode' => 'invitation', 'user' => $admin->id, 'email' => 'csv-race@example.test'],
+            ['mode' => 'invitation', 'user' => $admin->id, 'email' => 'csv-race@example.test'],
+        ]);
+        $check(in_array($invitationRace, [[200, 201], [201, 409]], true), 'Concurrent invitations send once');
+        $check(InvitationCode::where('email', 'csv-race@example.test')->count() === 1, 'Concurrent invitations share a single code');
     } finally {
         Mail::swap($originalMailManager);
         config(['mail.default' => $originalMailer]);

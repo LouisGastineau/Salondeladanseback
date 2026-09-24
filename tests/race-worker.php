@@ -26,6 +26,12 @@ fgets(STDIN);
 try {
     if ($job['mode'] === 'register') {
         app(AuthService::class)->register($job['data']);
+    } elseif ($job['mode'] === 'invitation') {
+        config(['mail.default' => 'smtp']);
+        Illuminate\Support\Facades\Mail::fake();
+        app(App\Services\InvitationService::class)->send(User::findOrFail($job['user']), $job['email']);
+        echo Illuminate\Support\Facades\Mail::sent(App\Mail\VolunteerInvitation::class)->count() === 1 ? "201\n" : "200\n";
+        exit(0);
     } else {
         app(ReservationService::class)->create(User::findOrFail($job['user']), $job['slot']);
     }

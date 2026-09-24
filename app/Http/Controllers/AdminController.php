@@ -8,17 +8,21 @@ use App\Http\Requests\AdminUpdateUserRequest;
 use App\Http\Requests\AdminUserIndexRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
+use App\Http\Requests\ImportInvitationsRequest;
+use App\Http\Requests\InvitationIndexRequest;
 use App\Http\Requests\SendInvitationRequest;
 use App\Http\Resources\AdminPlanningResource;
 use App\Http\Resources\CreneauParticipantResource;
 use App\Http\Resources\CreneauResource;
 use App\Http\Resources\InvitationCodeResource;
+use App\Http\Resources\InvitationImportResource;
 use App\Http\Resources\ReservationResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Services\AdminPlanningService;
 use App\Services\AdminService;
 use App\Services\ExportService;
+use App\Services\InvitationCsvService;
 use App\Services\InvitationService;
 use App\Services\PlanningService;
 use App\Services\ReservationService;
@@ -106,6 +110,18 @@ class AdminController extends Controller
         return (new InvitationCodeResource($service->send($request->user(), $request->validated('email'))))
             ->additional(['message' => 'Invitation transmise au service d’envoi.'])
             ->response()->setStatusCode(201);
+    }
+
+    public function invitationIndex(InvitationIndexRequest $request, InvitationService $service): AnonymousResourceCollection
+    {
+        return InvitationCodeResource::collection($service->index($request->user(), $request->validated()));
+    }
+
+    public function importInvitations(ImportInvitationsRequest $request, InvitationCsvService $service): AnonymousResourceCollection
+    {
+        $result = $service->import($request->user(), $request->file('file'), $request->integer('offset', 0), $request->integer('limit', 20));
+
+        return InvitationImportResource::collection($result['rows'])->additional(['meta' => $result['meta']]);
     }
 
     public function export(AdminUserIndexRequest $request, ExportService $service): StreamedResponse

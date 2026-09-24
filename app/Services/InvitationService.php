@@ -2,10 +2,13 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Exceptions\InvitationDeliveryException;
 use App\Mail\VolunteerInvitation;
 use App\Models\InvitationCode;
 use App\Models\User;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -26,20 +29,47 @@ class InvitationService
             throw new InvitationDeliveryException('L’envoi des invitations par email n’est pas configuré.');
         }
 
-        // Persist before sending, but do not allow registration until the transport accepts it.
-        $invitation = InvitationCode::create([
-            'code' => strtoupper(bin2hex(random_bytes(12))),
-            'isActive' => false,
+        // Create outside the transaction so a concurrent unique-key winner is visible
+        // to firstOrCreate's recovery query under MariaDB REPEATABLE READ.
+        $record = InvitationCode::firstOrCreate(['email' => $email], [
+            'code' => strtoupper(bin2hex(random_bytes(12))), 'isActive' => false,
         ]);
+        $invitation = DB::transaction(function () use ($record) {
+            $record = InvitationCode::whereKey($record->id)->lockForUpdate()->firstOrFail();
+            if ($record->statut_envoi === 'envoye') {
+                return $record;
+            }
+            if ($record->statut_envoi === 'en_cours') {
+                throw new BusinessRuleException('Un envoi est déjà en cours pour cette adresse.');
+            }
+            $record->update(['statut_envoi' => 'en_cours', 'isActive' => false]);
+
+            return $record;
+        }, 3);
+        if ($invitation->statut_envoi === 'envoye') {
+            return $invitation;
+        }
 
         try {
             Mail::to($email)->send(new VolunteerInvitation($invitation->code));
-            $invitation->update(['isActive' => true]);
         } catch (Throwable $exception) {
-            // The committed code remains inactive if sending or activation fails.
+            $invitation->update(['statut_envoi' => 'echec', 'isActive' => false]);
             throw new InvitationDeliveryException('L’invitation n’a pas pu être envoyée. Veuillez réessayer.');
         }
+        // If persistence fails after SMTP acceptance, keep en_cours to prevent blind retries.
+        $invitation->update(['isActive' => true, 'statut_envoi' => 'envoye', 'envoye_at' => now()]);
 
         return $invitation;
+    }
+
+    public function index(User $actor, array $filters): LengthAwarePaginator
+    {
+        abort_unless($actor->role === User::ROLE_ADMIN, 403);
+
+        return InvitationCode::query()
+            ->when(isset($filters['email']), fn ($q) => $q->where('email', mb_strtolower(trim($filters['email']))))
+            ->when(isset($filters['statut_envoi']), fn ($q) => $q->where('statut_envoi', $filters['statut_envoi']))
+            ->when(isset($filters['isActive']), fn ($q) => $q->where('isActive', $filters['isActive']))
+            ->orderByDesc('id')->paginate($filters['per_page'] ?? 50)->withQueryString();
     }
 }

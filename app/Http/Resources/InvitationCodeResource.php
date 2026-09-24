@@ -13,6 +13,9 @@ class InvitationCodeResource extends JsonResource
             'id' => $this->id,
             'code' => $this->code,
             'isActive' => $this->isActive,
+            'email' => $this->email,
+            'statut_envoi' => $this->statut_envoi,
+            'envoye_at' => $this->envoye_at?->toIso8601String(),
         ];
     }
 }
