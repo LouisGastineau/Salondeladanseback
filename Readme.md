@@ -101,3 +101,15 @@ L'extension demandée pour créer/modifier éditions, missions et créneaux depu
 Les tests MariaDB créent des tables isolées avec un préfixe aléatoire, puis les suppriment. Le test PDF génère `tests/planning-test.pdf`, ignoré par Git.
 
 Le dossier `deployment/` conserve l'ancienne configuration Nginx du VPS, à adapter à votre environnement. Les certificats, clés privées, identifiants SSH et données de production ne font pas partie du dépôt.
+
+
+## Recuperation de mot de passe et editions
+
+- `POST /api/forgot-password` : `{"email":"benevole@example.com"}`. Reponse generique 200 ; email synchrone via Brevo avec un code de reinitialisation (60 minutes). Limite : 5 requetes/minute/IP et un email/minute/compte.
+- `POST /api/reset-password` : `{"email":"benevole@example.com","token":"code recu par email","password":"nouveau-mot-de-passe","password_confirmation":"nouveau-mot-de-passe"}`. Le code est consomme et toutes les sessions du compte sont revoquees. Code invalide/expire : 422.
+- `GET /api/admin/missions/{id}` et `GET /api/admin/creneaux/{id}` : details, token admin requis.
+- `PATCH /api/admin/editions/{id}` avec `{"isArchived":true}` archive et desactive une edition. Les reservations restent consultables avec `GET /api/admin/plannings?edition_id={id}`.
+- Restaurer : `{"isArchived":false}` ; activer : `{"isArchived":false,"isActive":true}`. Une seule edition active ; les statuts historiques sont conserves dans les reservations, et `users.statut_planning` reflete l'edition active.
+- `PATCH /api/admin/creneaux/{id}` avec `{"capacite_max":10}` : refuse (409) si inferieur au nombre de reservations. Les horaires/jour/mission d'un creneau reserve ne sont pas deplacables avant retrait des reservations.
+- Les PATCH de dates/heures sont verifies avec les valeurs existantes. Les dates d'une edition doivent contenir tous ses creneaux. Une mission avec creneaux ne change pas d'edition.
+- Aucun email reel n'est envoye par les tests automatises (transport simule).

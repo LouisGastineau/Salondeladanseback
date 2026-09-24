@@ -2,8 +2,12 @@
 
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PlanningController;
 use Illuminate\Support\Facades\Route;
+
+Route::post('forgot-password', [PasswordController::class, 'forgot'])->middleware('throttle:5,1');
+Route::post('reset-password', [PasswordController::class, 'reset'])->middleware('throttle:10,1');
 
 Route::post('register', [AuthController::class, 'register'])->middleware('throttle:register');
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:login');
@@ -30,6 +34,8 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::patch('editions/{id}', [AdminController::class, 'updateEdition'])->whereNumber('id');
         Route::delete('editions/{id}', [AdminController::class, 'deleteEdition'])->whereNumber('id');
         Route::get('missions', [AdminController::class, 'missions']);
+        Route::get('missions/{id}', [AdminController::class, 'mission'])->whereNumber('id');
+        Route::get('creneaux/{id}', [AdminController::class, 'creneau'])->whereNumber('id');
         Route::post('missions', [AdminController::class, 'storeMission']);
         Route::patch('missions/{id}', [AdminController::class, 'updateMission'])->whereNumber('id');
         Route::delete('missions/{id}', [AdminController::class, 'deleteMission'])->whereNumber('id');

@@ -5,8 +5,8 @@ namespace App\Http\Controllers;
 use App\Http\Requests\AdminCreateReservationRequest;
 use App\Http\Requests\AdminPlanningIndexRequest;
 use App\Http\Requests\AdminUpdateUserRequest;
-use App\Http\Requests\ChangeUserRoleRequest;
 use App\Http\Requests\AdminUserIndexRequest;
+use App\Http\Requests\ChangeUserRoleRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
 use App\Http\Requests\ImportInvitationsRequest;
@@ -28,8 +28,8 @@ use App\Http\Resources\MissionResource;
 use App\Http\Resources\ReservationResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
-use App\Services\AdminPlanningService;
 use App\Services\AdminCatalogService;
+use App\Services\AdminPlanningService;
 use App\Services\AdminService;
 use App\Services\ExportService;
 use App\Services\InvitationCsvService;
@@ -44,6 +44,16 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AdminController extends Controller
 {
+    public function mission(Request $request, int $id, AdminCatalogService $service): MissionResource
+    {
+        return new MissionResource($service->mission($request->user(), $id));
+    }
+
+    public function creneau(Request $request, int $id, AdminCatalogService $service): CreneauResource
+    {
+        return new CreneauResource($service->creneau($request->user(), $id));
+    }
+
     public function editions(Request $request, AdminCatalogService $service): AnonymousResourceCollection
     {
         return EditionResource::collection($service->editions($request->user()));

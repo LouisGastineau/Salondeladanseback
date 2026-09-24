@@ -1,28 +1,34 @@
 <?php
 
 // php tests/api-smoke.php — isolated MariaDB tables; no live account is created.
+use App\Mail\PasswordRecovery;
+use App\Mail\VolunteerInvitation;
 use App\Models\Edition;
 use App\Models\InvitationCode;
 use App\Models\Reservation;
 use App\Models\User;
-use App\Mail\VolunteerInvitation;
+use App\Services\InvitationCsvService;
+use App\Services\InvitationService;
 use App\Services\ReservationService;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Foundation\Bootstrap\BootProviders;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 require __DIR__.'/../vendor/autoload.php';
 $app = require __DIR__.'/../bootstrap/app.php';
 // Configure the limiter before providers resolve it, so repeated runs never share counters.
-$app->beforeBootstrapping(\Illuminate\Foundation\Bootstrap\BootProviders::class,
+$app->beforeBootstrapping(BootProviders::class,
     fn () => config(['cache.default' => 'array', 'cache.limiter' => 'array']));
 $app->make(ConsoleKernel::class)->bootstrap();
 $config = config('database.connections.'.config('database.default'));
@@ -345,19 +351,19 @@ try {
         $check($last['meta']['next_offset'] === null && $last['data'][0]['statut'] === 'envoye', 'CSV completed');
         Mail::assertSent(VolunteerInvitation::class, 2);
         $record = InvitationCode::where('email', 'csv-a@example.test')->firstOrFail();
-        $reused = app(App\Services\InvitationService::class)->send($admin, 'CSV-A@example.test');
+        $reused = app(InvitationService::class)->send($admin, 'CSV-A@example.test');
         $check($reused->id === $record->id && $reused->envoye_at !== null, 'Individual send reuses delivered invitation');
         Mail::assertSent(VolunteerInvitation::class, 2);
         $listing = $expect(200, $api('GET', '/api/admin/invitations?email=csv-a%40example.test&statut_envoi=envoye', token: $adminToken), 'Invitation listing')[1];
         $check($listing['meta']['total'] === 1 && $listing['data'][0]['email'] === 'csv-a@example.test', 'Invitation listing filters');
         $expect(403, $api('GET', '/api/admin/invitations', token: $token), 'Invitation identities private');
 
-        $csvService = app(App\Services\InvitationCsvService::class);
+        $csvService = app(InvitationCsvService::class);
         foreach (["email\n", "name,address\nX,y@example.test\n", "email\n\xFF@example.test", "email\n".str_repeat("x@example.test\n", 201)] as $invalidCsv) {
             try {
                 $csvService->import($admin, $csvFile($invalidCsv), 0, 20);
                 throw new RuntimeException('Invalid CSV was accepted');
-            } catch (Illuminate\Validation\ValidationException $expected) {
+            } catch (ValidationException $expected) {
                 $check(isset($expected->errors()['file']), 'Invalid CSV rejected before sending');
             }
         }
@@ -392,6 +398,31 @@ try {
         Mail::swap($originalMailManager);
         config(['mail.default' => $originalMailer]);
     }
+    $resetUser = User::factory()->create();
+    $resetSession = $resetUser->createToken('reset-test')->plainTextToken;
+    $mailManager = Mail::getFacadeRoot();
+    $oldMailer = config('mail.default');
+    config(['mail.default' => 'smtp']);
+    Mail::fake();
+    try {
+        $unknown = $expect(200, $api('POST', '/api/forgot-password', ['email' => 'absent@example.test']), 'Unknown email generic response');
+        $known = $expect(200, $api('POST', '/api/forgot-password', ['email' => $resetUser->email]), 'Password recovery');
+        $check($unknown[1] === $known[1], 'No account existence disclosure');
+        $mail = Mail::sent(PasswordRecovery::class)->first();
+        $check($mail !== null && str_contains($mail->render(), $mail->token), 'Recovery email rendered');
+        $resetData = ['email' => $resetUser->email, 'token' => $mail->token, 'password' => 'new-password-123', 'password_confirmation' => 'new-password-123'];
+        $expect(422, $api('POST', '/api/reset-password', array_replace($resetData, ['token' => 'wrong'])), 'Invalid recovery token');
+        $expect(200, $api('POST', '/api/reset-password', $resetData), 'Reset password');
+        $check(Hash::check('new-password-123', $resetUser->fresh()->password), 'New password hashed');
+        $expect(401, $api('GET', '/api/me', token: $resetSession), 'Reset revokes sessions');
+        $expect(422, $api('POST', '/api/reset-password', $resetData), 'Recovery token single use');
+        $expired = Password::createToken($resetUser);
+        DB::table('password_reset_tokens')->where('email', $resetUser->email)->update(['created_at' => now()->subMinutes(61)]);
+        $expect(422, $api('POST', '/api/reset-password', array_replace($resetData, ['token' => $expired])), 'Recovery token expires');
+    } finally {
+        Mail::swap($mailManager);
+        config(['mail.default' => $oldMailer]);
+    }
     $catalogEdition = $expect(201, $api('POST', '/api/admin/editions', [
         'nom' => 'Édition CRUD', 'date_debut' => '2027-10-01', 'date_fin' => '2027-10-03', 'isActive' => false,
     ], $adminToken), 'Create edition')[1]['data'];
@@ -404,12 +435,33 @@ try {
     ], $adminToken), 'Create slot')[1]['data'];
     $check($catalogSlot['mission']['id'] === $catalogMission['id'], 'Created slot relation');
     $expect(200, $api('PATCH', '/api/admin/creneaux/'.$catalogSlot['id'], ['capacite_max' => 8], $adminToken), 'Update slot');
+    $expect(200, $api('GET', '/api/admin/missions/'.$catalogMission['id'], token: $adminToken), 'Mission detail');
+    $expect(200, $api('GET', '/api/admin/creneaux/'.$catalogSlot['id'], token: $adminToken), 'Slot detail');
+    $expect(409, $api('PATCH', '/api/admin/creneaux/'.$catalogSlot['id'], ['heure_fin' => '08:00'], $adminToken), 'Partial invalid time');
+    $expect(409, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['date_debut' => '2027-10-04'], $adminToken), 'Partial invalid dates');
+    $expect(200, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['isActive' => true], $adminToken), 'Switch edition');
+    $check(Edition::where('isActive', true)->count() === 1 && $user->fresh()->statut_planning === 'brouillon', 'New edition starts draft: '.Edition::where('isActive', true)->count().' / '.$user->fresh()->statut_planning);
+    $booking = $expect(201, $api('POST', '/api/admin/reservations', ['user_id' => $user->id, 'creneau_id' => $catalogSlot['id']], $adminToken), 'Book new edition')[1]['data']['id'];
+    $second = Reservation::create(['user_id' => $resetUser->id, 'creneau_id' => $catalogSlot['id']]);
+    $expect(409, $api('PATCH', '/api/admin/creneaux/'.$catalogSlot['id'], ['capacite_max' => 1], $adminToken), 'Capacity below reservations');
+    $expect(409, $api('PATCH', '/api/admin/creneaux/'.$catalogSlot['id'], ['heure_fin' => '12:00'], $adminToken), 'Booked time change rejected');
+    $expect(200, $api('POST', '/api/admin/users/'.$user->id.'/planning/valider', token: $adminToken), 'Validate new edition');
+    $expect(200, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['isArchived' => true], $adminToken), 'Archive active edition');
+    $check(! Edition::find($catalogEdition['id'])->isActive && Reservation::find($booking)->statut === 'valide', 'Archive retains history');
+    $expect(409, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['isActive' => true], $adminToken), 'Archived activation rejected');
+    $expect(200, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['isArchived' => false, 'isActive' => true], $adminToken), 'Restore edition');
+    $check($user->fresh()->statut_planning === 'valide', 'Restore planning status');
+    $expect(200, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['nom' => 'Renamed active'], $adminToken), 'Rename active edition');
+    $check(Edition::find($catalogEdition['id'])->isActive, 'Active flag preserved');
+    $expect(200, $api('POST', '/api/admin/users/'.$user->id.'/planning/deverrouiller', token: $adminToken), 'Unlock test planning');
+    $expect(204, $api('DELETE', '/api/admin/reservations/'.$booking, token: $adminToken), 'Remove test reservation');
+    $second->delete();
     $expect(204, $api('DELETE', '/api/admin/creneaux/'.$catalogSlot['id'], token: $adminToken), 'Delete slot');
     $expect(204, $api('DELETE', '/api/admin/missions/'.$catalogMission['id'], token: $adminToken), 'Delete mission');
     $expect(204, $api('DELETE', '/api/admin/editions/'.$catalogEdition['id'], token: $adminToken), 'Delete edition');
 } finally {
     // Delete only data in this run's uniquely prefixed tables before rollback.
-    foreach (['personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {
+    foreach (['password_reset_tokens', 'personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {
         if (Schema::hasTable($table)) {
             DB::table($table)->delete();
         }

@@ -13,7 +13,7 @@ class AdminPlanningService
     public function index(User $actor, array $filters): array
     {
         // The admin service checks the actor before any planning query.
-        $query = $this->admins->users($actor, $filters);
+        $query = $this->admins->users($actor, array_diff_key($filters, ['statut_planning' => true]));
         $edition = isset($filters['edition_id'])
             ? Edition::findOrFail($filters['edition_id'])
             : $this->editions->active();
@@ -24,11 +24,16 @@ class AdminPlanningService
         ])->get();
 
         foreach ($users as $user) {
+            $user->statut_planning = $user->reservations->isNotEmpty() && $user->reservations->every(fn ($r) => $r->statut === 'valide') ? 'valide' : 'brouillon';
             $user->setRelation('reservations', $user->reservations->sortBy([
                 fn ($a, $b) => $a->creneau->jour <=> $b->creneau->jour,
                 fn ($a, $b) => $a->creneau->heure_debut <=> $b->creneau->heure_debut,
                 fn ($a, $b) => $a->id <=> $b->id,
             ])->values());
+        }
+
+        if (isset($filters['statut_planning'])) {
+            $users = $users->where('statut_planning', $filters['statut_planning'])->values();
         }
 
         return ['edition_id' => $edition->id, 'users' => $users];

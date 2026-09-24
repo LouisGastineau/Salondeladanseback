@@ -20,6 +20,7 @@ class Edition extends Model
         'date_debut',
         'date_fin',
         'isActive',
+        'isArchived',
     ];
 
     protected function casts(): array
@@ -28,6 +29,7 @@ class Edition extends Model
             'date_debut' => 'date:Y-m-d',
             'date_fin' => 'date:Y-m-d',
             'isActive' => 'boolean',
+            'isArchived' => 'boolean',
         ];
     }
 
