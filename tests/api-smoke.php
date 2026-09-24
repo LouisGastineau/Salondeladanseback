@@ -392,6 +392,21 @@ try {
         Mail::swap($originalMailManager);
         config(['mail.default' => $originalMailer]);
     }
+    $catalogEdition = $expect(201, $api('POST', '/api/admin/editions', [
+        'nom' => 'Édition CRUD', 'date_debut' => '2027-10-01', 'date_fin' => '2027-10-03', 'isActive' => false,
+    ], $adminToken), 'Create edition')[1]['data'];
+    $expect(200, $api('PATCH', '/api/admin/editions/'.$catalogEdition['id'], ['nom' => 'Édition CRUD modifiée'], $adminToken), 'Update edition');
+    $catalogMission = $expect(201, $api('POST', '/api/admin/missions', [
+        'edition_id' => $catalogEdition['id'], 'nom' => 'Mission CRUD', 'isSensible' => true,
+    ], $adminToken), 'Create mission')[1]['data'];
+    $catalogSlot = $expect(201, $api('POST', '/api/admin/creneaux', [
+        'mission_id' => $catalogMission['id'], 'jour' => '2027-10-01', 'heure_debut' => '09:00', 'heure_fin' => '11:00', 'capacite_max' => 4,
+    ], $adminToken), 'Create slot')[1]['data'];
+    $check($catalogSlot['mission']['id'] === $catalogMission['id'], 'Created slot relation');
+    $expect(200, $api('PATCH', '/api/admin/creneaux/'.$catalogSlot['id'], ['capacite_max' => 8], $adminToken), 'Update slot');
+    $expect(204, $api('DELETE', '/api/admin/creneaux/'.$catalogSlot['id'], token: $adminToken), 'Delete slot');
+    $expect(204, $api('DELETE', '/api/admin/missions/'.$catalogMission['id'], token: $adminToken), 'Delete mission');
+    $expect(204, $api('DELETE', '/api/admin/editions/'.$catalogEdition['id'], token: $adminToken), 'Delete edition');
 } finally {
     // Delete only data in this run's uniquely prefixed tables before rollback.
     foreach (['personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {

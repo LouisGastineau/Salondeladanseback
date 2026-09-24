@@ -12,15 +12,24 @@ use App\Http\Requests\CreneauIndexRequest;
 use App\Http\Requests\ImportInvitationsRequest;
 use App\Http\Requests\InvitationIndexRequest;
 use App\Http\Requests\SendInvitationRequest;
+use App\Http\Requests\StoreCreneauRequest;
+use App\Http\Requests\StoreEditionRequest;
+use App\Http\Requests\StoreMissionRequest;
+use App\Http\Requests\UpdateCreneauRequest;
+use App\Http\Requests\UpdateEditionRequest;
+use App\Http\Requests\UpdateMissionRequest;
 use App\Http\Resources\AdminPlanningResource;
 use App\Http\Resources\CreneauParticipantResource;
 use App\Http\Resources\CreneauResource;
+use App\Http\Resources\EditionResource;
 use App\Http\Resources\InvitationCodeResource;
 use App\Http\Resources\InvitationImportResource;
+use App\Http\Resources\MissionResource;
 use App\Http\Resources\ReservationResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Services\AdminPlanningService;
+use App\Services\AdminCatalogService;
 use App\Services\AdminService;
 use App\Services\ExportService;
 use App\Services\InvitationCsvService;
@@ -35,6 +44,84 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AdminController extends Controller
 {
+    public function editions(Request $request, AdminCatalogService $service): AnonymousResourceCollection
+    {
+        return EditionResource::collection($service->editions($request->user()));
+    }
+
+    public function edition(Request $request, int $id, AdminCatalogService $service): EditionResource
+    {
+        return new EditionResource($service->edition($request->user(), $id));
+    }
+
+    public function storeEdition(StoreEditionRequest $request, AdminCatalogService $service)
+    {
+        return (new EditionResource($service->saveEdition($request->user(), $request->validated())))
+            ->response()->setStatusCode(201);
+    }
+
+    public function updateEdition(UpdateEditionRequest $request, int $id, AdminCatalogService $service): EditionResource
+    {
+        return new EditionResource($service->saveEdition($request->user(), $request->validated(), $id));
+    }
+
+    public function deleteEdition(Request $request, int $id, AdminCatalogService $service): Response
+    {
+        $service->deleteEdition($request->user(), $id);
+
+        return response()->noContent();
+    }
+
+    public function missions(Request $request, AdminCatalogService $service): AnonymousResourceCollection
+    {
+        return MissionResource::collection($service->missions($request->user(), $request->integer('edition_id') ?: null));
+    }
+
+    public function storeMission(StoreMissionRequest $request, AdminCatalogService $service)
+    {
+        return (new MissionResource($service->saveMission($request->user(), $request->validated())))
+            ->response()->setStatusCode(201);
+    }
+
+    public function updateMission(UpdateMissionRequest $request, int $id, AdminCatalogService $service): MissionResource
+    {
+        return new MissionResource($service->saveMission($request->user(), $request->validated(), $id));
+    }
+
+    public function deleteMission(Request $request, int $id, AdminCatalogService $service): Response
+    {
+        $service->deleteMission($request->user(), $id);
+
+        return response()->noContent();
+    }
+
+    public function adminCreneaux(Request $request, AdminCatalogService $service): AnonymousResourceCollection
+    {
+        return CreneauResource::collection($service->creneaux(
+            $request->user(),
+            $request->integer('mission_id') ?: null,
+            $request->integer('edition_id') ?: null,
+        ));
+    }
+
+    public function storeCreneau(StoreCreneauRequest $request, AdminCatalogService $service)
+    {
+        return (new CreneauResource($service->saveCreneau($request->user(), $request->validated())))
+            ->response()->setStatusCode(201);
+    }
+
+    public function updateCreneau(UpdateCreneauRequest $request, int $id, AdminCatalogService $service): CreneauResource
+    {
+        return new CreneauResource($service->saveCreneau($request->user(), $request->validated(), $id));
+    }
+
+    public function deleteCreneau(Request $request, int $id, AdminCatalogService $service): Response
+    {
+        $service->deleteCreneau($request->user(), $id);
+
+        return response()->noContent();
+    }
+
     public function user(Request $request, int $id, AdminService $service): UserResource
     {
         return new UserResource($service->user($request->user(), $id));
