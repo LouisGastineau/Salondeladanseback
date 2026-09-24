@@ -132,6 +132,54 @@ $mission->creneaux()->create(['jour' => '2026-10-09', 'heure_debut' => '09:00:00
 
 ## Erreurs et tests
 
+### Consultation admin groupée
+
+Ces routes exigent `Authorization: Bearer <token-admin>` et renvoient `403` pour un bénévole.
+
+| Méthode | Route | Résultat |
+|---|---|---|
+| GET | `/api/admin/users/{id}` | Fiche utilisateur au format `UserResource`, sans mot de passe ni code d’invitation |
+| GET | `/api/admin/plannings` | Tous les utilisateurs et leurs réservations de l’édition active, en une requête HTTP |
+| GET | `/api/admin/creneaux/{id}/inscrits` | Toutes les réservations du créneau, avec le profil de chaque inscrit |
+
+`/admin/plannings` accepte `q`, `role`, `statut_planning`, `isMineur` et `edition_id`. Exemple : `/api/admin/plannings?role=benevole`. Sans `edition_id`, il doit exister exactement une édition active, sinon `409`. Un `edition_id` explicite permet de consulter une édition inactive (`404` si elle n’existe pas). Les utilisateurs sans réservation sont inclus avec `reservations: []`. Cette route n’est pas paginée pour le MVP ; les relations sont chargées en groupe pour éviter une requête SQL par bénévole.
+
+Structure de la réponse groupée :
+
+```json
+{
+  "data": [
+    {
+      "id": 2,
+      "nom": "Test",
+      "prenom": "Benevole",
+      "email": "benevole.test@example.com",
+      "telephone": "0600000001",
+      "role": "benevole",
+      "isMineur": false,
+      "statut_planning": "brouillon",
+      "photo_url": null,
+      "reservations": []
+    }
+  ],
+  "meta": { "edition_id": 1 }
+}
+```
+
+Chaque réservation utilise le même format que `/api/admin/users/{id}/planning`. Les missions sensibles sont incluses pour l’administrateur uniquement. `statut_planning` reste l’état global actuel du compte ; pour une ancienne édition, utiliser le `statut` des réservations, le schéma ne conserve pas d’état de planning par édition.
+
+`/admin/creneaux/{id}/inscrits` retourne `data: [{ id, statut, user: {...} }]` et `meta.creneau` (créneau, mission et places restantes). Un créneau vide retourne `data: []`, un créneau inexistant `404`. Les réservations brouillon et validées sont incluses. Le créneau peut appartenir à une édition inactive.
+
+### Photos et ouverture du planning
+
+La validation de l’inscription et de la modification admin limite chaque photo à **2048 Kio (2 Mio)**, aux formats JPEG, PNG ou WebP et à 4096 × 4096 pixels. Le VPS accepte 3 Mio par fichier côté PHP et 4 Mio pour le corps de requête côté PHP/Nginx, mais la limite métier de 2 Mio s’applique en premier aux fichiers valides transmis à Laravel. Un dépassement de 2 Mio renvoie `422` sur `photo` tant que les plafonds du serveur ne sont pas atteints.
+
+Le planning exige exactement une édition active. Aucune édition active (ou plusieurs) produit `409`. Avec une édition active mais aucun créneau, la liste retourne un tableau vide. Le déploiement ne crée pas automatiquement les éditions, missions ou créneaux.
+
+### Fonctionnalités encore absentes
+
+La réinitialisation de mot de passe par email, le CRUD des éditions/missions/créneaux, la modification de capacité et un workflow d’archivage ne sont pas encore implémentés. L’envoi de récupération de mot de passe nécessitera la configuration du fournisseur mail et une URL frontend de réinitialisation. La gestion de plusieurs éditions devra traiter explicitement l’état du planning, actuellement stocké sur l’utilisateur et non par édition.
+
 ### Envoyer une invitation par email
 
 `POST /api/admin/invitations` exige un token administrateur. Le frontend envoie :

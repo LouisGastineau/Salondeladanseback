@@ -22,12 +22,15 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
 
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('users', [AdminController::class, 'users']);
+        Route::get('users/{id}', [AdminController::class, 'user'])->whereNumber('id');
+        Route::get('plannings', [AdminController::class, 'plannings']);
         Route::patch('users/{id}', [AdminController::class, 'updateUser'])->whereNumber('id');
         Route::get('users/{id}/photo', [AdminController::class, 'photo'])->whereNumber('id');
         Route::get('users/{id}/planning', [AdminController::class, 'planning'])->whereNumber('id');
         Route::post('users/{id}/planning/valider', [AdminController::class, 'validatePlanning'])->whereNumber('id');
         Route::post('users/{id}/planning/deverrouiller', [AdminController::class, 'unlockPlanning'])->whereNumber('id');
         Route::get('creneaux', [AdminController::class, 'slots']);
+        Route::get('creneaux/{id}/inscrits', [AdminController::class, 'participants'])->whereNumber('id');
         Route::post('reservations', [AdminController::class, 'storeReservation']);
         Route::delete('reservations/{id}', [AdminController::class, 'deleteReservation'])->whereNumber('id');
         Route::post('invitation-codes', [AdminController::class, 'invitations']);

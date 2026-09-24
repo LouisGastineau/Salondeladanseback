@@ -229,6 +229,58 @@ try {
     $edition->update(['isActive' => false]);
     $expect(409, $api('GET', '/api/creneaux', token: $token), 'No active edition');
     $edition->update(['isActive' => true]);
+    foreach (['/api/admin/users/'.$user->id, '/api/admin/plannings', '/api/admin/creneaux/'.$hidden->id.'/inscrits'] as $uri) {
+        $expect(401, $api('GET', $uri), 'Anonymous denied '.$uri);
+        $expect(403, $api('GET', $uri, token: $token), 'Volunteer denied '.$uri);
+    }
+    $detail = $expect(200, $api('GET', '/api/admin/users/'.$user->id, token: $adminToken), 'Admin user detail');
+    $check($detail[1]['data']['id'] === $user->id && $detail[1]['data']['email'] === $user->fresh()->email, 'Correct user detail');
+    $check(! str_contains($detail[2], 'password') && ! str_contains($detail[2], 'invitation_code_id'), 'User detail excludes secrets');
+    $expect(404, $api('GET', '/api/admin/users/999999999', token: $adminToken), 'Missing user');
+    $expect(404, $api('GET', '/api/admin/creneaux/999999999/inscrits', token: $adminToken), 'Missing slot');
+    $expect(404, $api('GET', '/api/admin/plannings?edition_id=999999999', token: $adminToken), 'Missing edition');
+    $expect(422, $api('GET', '/api/admin/plannings?edition_id=oops', token: $adminToken), 'Invalid edition filter');
+
+    $inactiveBooking = Reservation::create(['user_id' => $user->id, 'creneau_id' => $inactiveSlot->id]);
+    $emptyUser = User::factory()->create();
+    // More than a page of users, with several populated plans: catch truncation and N+1 queries.
+    $bulkUsers = User::factory()->count(105)->create(['password' => Hash::make('test-password')]);
+    $bulkSlot = $slot('20:00:00', '21:00:00', capacity: 20);
+    foreach ($bulkUsers->take(10) as $bulkUser) {
+        Reservation::create(['user_id' => $bulkUser->id, 'creneau_id' => $bulkSlot->id]);
+    }
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+    $bulk = $expect(200, $api('GET', '/api/admin/plannings', token: $adminToken), 'Bulk admin plannings');
+    $queryCount = count(DB::getQueryLog());
+    DB::disableQueryLog();
+    $check($queryCount <= 12, 'Bulk plannings use a bounded number of queries, got '.$queryCount);
+    $check(count($bulk[1]['data']) === User::count(), 'All users returned without pagination');
+    $check($bulk[1]['meta']['edition_id'] === $edition->id, 'Active edition identified');
+    $check(collect($bulk[1]['data'])->firstWhere('id', $emptyUser->id)['reservations'] === [], 'Empty plans retained');
+    $mine = collect($bulk[1]['data'])->firstWhere('id', $user->id);
+    $check(in_array($hiddenReservation, array_column($mine['reservations'], 'id')), 'Bulk includes sensitive admin assignment');
+    $check(! in_array($inactiveBooking->id, array_column($mine['reservations'], 'id')), 'Bulk excludes other editions');
+    $check(! str_contains($bulk[2], 'password') && ! str_contains($bulk[2], 'invitation_code_id'), 'Bulk excludes secrets');
+    $filteredBulk = $expect(200, $api('GET', '/api/admin/plannings?q='.rawurlencode($user->fresh()->email).'&role=benevole', token: $adminToken), 'Bulk filters');
+    $check(count($filteredBulk[1]['data']) === 1, 'Bulk search result');
+
+    $participants = $expect(200, $api('GET', '/api/admin/creneaux/'.$hidden->id.'/inscrits', token: $adminToken), 'Sensitive slot participants');
+    $check(count($participants[1]['data']) === 1 && $participants[1]['data'][0]['user']['id'] === $user->id, 'Correct participant identity');
+    $check($participants[1]['meta']['creneau']['places_restantes'] === $hidden->capacite_max - 1, 'Participant count consistent with capacity');
+    $check(! str_contains($participants[2], 'password') && ! str_contains($participants[2], 'invitation_code_id'), 'Participants exclude secrets');
+    $emptyParticipants = $expect(200, $api('GET', '/api/admin/creneaux/'.$inactiveSlot->id.'/inscrits', token: $adminToken), 'Inactive edition slot accessible to admin');
+    $check(count($emptyParticipants[1]['data']) === 1, 'Inactive slot participant returned');
+    $edition->update(['isActive' => false]);
+    $expect(409, $api('GET', '/api/admin/plannings', token: $adminToken), 'Bulk requires active edition by default');
+    $history = $expect(200, $api('GET', '/api/admin/plannings?edition_id='.$inactive->id, token: $adminToken), 'Explicit inactive edition planning');
+    $historicalUser = collect($history[1]['data'])->firstWhere('id', $user->id);
+    $check(array_column($historicalUser['reservations'], 'id') === [$inactiveBooking->id], 'Historical edition does not mix reservations');
+    $edition->update(['isActive' => true]);
+
+    $tooLarge = UploadedFile::fake()->image('oversize.jpg')->size(2049);
+    $photoFailure = $expect(422, $api('PATCH', '/api/admin/users/'.$user->id, token: $adminToken, files: ['photo' => $tooLarge]), 'Photos above 2 MiB rejected');
+    $check(isset($photoFailure[1]['errors']['photo']), 'Photo size validation identifies field');
     for ($i = 0; $i < 5; $i++) {
         $expect(422, $api('POST', '/api/login', ['email' => 'throttle@example.test', 'password' => 'wrong'], headers: ['REMOTE_ADDR' => '127.0.9.1']), 'Failed login throttling');
     }

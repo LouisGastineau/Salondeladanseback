@@ -3,16 +3,20 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\AdminCreateReservationRequest;
+use App\Http\Requests\AdminPlanningIndexRequest;
 use App\Http\Requests\AdminUpdateUserRequest;
 use App\Http\Requests\AdminUserIndexRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
 use App\Http\Requests\SendInvitationRequest;
+use App\Http\Resources\AdminPlanningResource;
+use App\Http\Resources\CreneauParticipantResource;
 use App\Http\Resources\CreneauResource;
 use App\Http\Resources\InvitationCodeResource;
 use App\Http\Resources\ReservationResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Services\AdminPlanningService;
 use App\Services\AdminService;
 use App\Services\ExportService;
 use App\Services\InvitationService;
@@ -26,6 +30,27 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AdminController extends Controller
 {
+    public function user(Request $request, int $id, AdminService $service): UserResource
+    {
+        return new UserResource($service->user($request->user(), $id));
+    }
+
+    public function plannings(AdminPlanningIndexRequest $request, AdminPlanningService $service): AnonymousResourceCollection
+    {
+        $result = $service->index($request->user(), $request->validated());
+
+        return AdminPlanningResource::collection($result['users'])
+            ->additional(['meta' => ['edition_id' => $result['edition_id']]]);
+    }
+
+    public function participants(Request $request, int $id, AdminPlanningService $service): AnonymousResourceCollection
+    {
+        $slot = $service->participants($request->user(), $id);
+
+        return CreneauParticipantResource::collection($slot->reservations)
+            ->additional(['meta' => ['creneau' => new CreneauResource($slot)]]);
+    }
+
     public function users(AdminUserIndexRequest $request, AdminService $service): AnonymousResourceCollection
     {
         return UserResource::collection($service->users($request->user(), $request->validated())

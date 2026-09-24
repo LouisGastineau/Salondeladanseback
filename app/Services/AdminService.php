@@ -13,6 +13,13 @@ use Illuminate\Validation\ValidationException;
 
 class AdminService
 {
+    public function user(User $actor, int $id): User
+    {
+        $this->authorize($actor);
+
+        return User::findOrFail($id);
+    }
+
     public function users(User $actor, array $filters): Builder
     {
         $this->authorize($actor);
