@@ -141,6 +141,17 @@ try {
     $expect(403, $api('POST', '/api/admin/reservations', ['user_id' => $user->id, 'creneau_id' => $hidden->id], $token), 'Manual assignment protected');
     $expect(403, $api('POST', '/api/admin/invitation-codes', ['nombre' => 1], $token), 'Codes protected');
     $expect(403, $api('POST', '/api/admin/users/'.$user->id.'/planning/deverrouiller', token: $token), 'Unlock protected');
+    $roleTarget = User::factory()->create(['role' => User::ROLE_BENEVOLE]);
+    $expect(403, $api('PATCH', '/api/admin/users/'.$roleTarget->id.'/role', ['role' => 'admin'], $token), 'Role change protected');
+    $expect(422, $api('PATCH', '/api/admin/users/'.$roleTarget->id.'/role', ['role' => 'superadmin'], $adminToken), 'Invalid role rejected');
+    $promoted = $expect(200, $api('PATCH', '/api/admin/users/'.$roleTarget->id.'/role', ['role' => 'admin'], $adminToken), 'Promote user')[1]['data'];
+    $check($promoted['role'] === User::ROLE_ADMIN && $roleTarget->fresh()->role === User::ROLE_ADMIN, 'Role promotion persisted');
+    $roleTargetToken = $roleTarget->fresh()->createToken('role-test')->plainTextToken;
+    $expect(200, $api('GET', '/api/admin/users', token: $roleTargetToken), 'Promoted admin access');
+    $expect(200, $api('PATCH', '/api/admin/users/'.$roleTarget->id.'/role', ['role' => 'benevole'], $adminToken), 'Demote user');
+    $check($roleTarget->fresh()->role === User::ROLE_BENEVOLE && $roleTarget->tokens()->count() === 0, 'Demotion revokes tokens');
+    $expect(401, $api('GET', '/api/admin/users', token: $roleTargetToken), 'Demoted token revoked');
+    $expect(409, $api('PATCH', '/api/admin/users/'.$admin->id.'/role', ['role' => 'benevole'], $adminToken), 'Cannot demote self');
     $expect(409, $api('POST', '/api/planning/valider', token: $token), 'Minimum one');
     $publicSlots = $expect(200, $api('GET', '/api/creneaux', token: $token), 'Public slots');
     $check(! str_contains($publicSlots[2], 'Billetterie'), 'Sensitive mission excluded');

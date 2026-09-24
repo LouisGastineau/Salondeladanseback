@@ -25,6 +25,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::get('users/{id}', [AdminController::class, 'user'])->whereNumber('id');
         Route::get('plannings', [AdminController::class, 'plannings']);
         Route::patch('users/{id}', [AdminController::class, 'updateUser'])->whereNumber('id');
+        Route::patch('users/{id}/role', [AdminController::class, 'changeRole'])->whereNumber('id');
         Route::get('users/{id}/photo', [AdminController::class, 'photo'])->whereNumber('id');
         Route::get('users/{id}/planning', [AdminController::class, 'planning'])->whereNumber('id');
         Route::post('users/{id}/planning/valider', [AdminController::class, 'validatePlanning'])->whereNumber('id');

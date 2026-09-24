@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\AdminCreateReservationRequest;
 use App\Http\Requests\AdminPlanningIndexRequest;
 use App\Http\Requests\AdminUpdateUserRequest;
+use App\Http\Requests\ChangeUserRoleRequest;
 use App\Http\Requests\AdminUserIndexRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
@@ -64,6 +65,11 @@ class AdminController extends Controller
     public function updateUser(AdminUpdateUserRequest $request, int $id, AdminService $service): UserResource
     {
         return new UserResource($service->update($request->user(), $id, $request->validated(), $request->file('photo')));
+    }
+
+    public function changeRole(ChangeUserRoleRequest $request, int $id, AdminService $service): UserResource
+    {
+        return new UserResource($service->changeRole($request->user(), $id, $request->validated('role')));
     }
 
     public function slots(CreneauIndexRequest $request, PlanningService $service): AnonymousResourceCollection

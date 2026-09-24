@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\InvitationCode;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -66,6 +67,36 @@ class AdminService
         }
 
         return $user;
+    }
+
+    public function changeRole(User $actor, int $userId, string $role): User
+    {
+        $this->authorize($actor);
+
+        return DB::transaction(function () use ($actor, $userId, $role) {
+            // Lock both rows before checking the last-admin invariant.
+            $actorLocked = User::whereKey($actor->id)->lockForUpdate()->firstOrFail();
+            $user = User::whereKey($userId)->lockForUpdate()->firstOrFail();
+
+            if ($user->id === $actorLocked->id && $role !== User::ROLE_ADMIN) {
+                throw new BusinessRuleException('Un administrateur ne peut pas se rétrograder lui-même.', 409);
+            }
+
+            if ($user->role === User::ROLE_ADMIN && $role === User::ROLE_BENEVOLE
+                && User::where('role', User::ROLE_ADMIN)->lockForUpdate()->count() <= 1) {
+                throw new BusinessRuleException('Le dernier administrateur ne peut pas être rétrogradé.', 409);
+            }
+
+            $user->role = $role;
+            $user->save();
+
+            // Remove elevated sessions immediately when an admin is demoted.
+            if ($role === User::ROLE_BENEVOLE) {
+                $user->tokens()->delete();
+            }
+
+            return $user->refresh();
+        }, 3);
     }
 
     public function invitations(User $actor, int $count): array
