@@ -2,6 +2,7 @@
 
 // php tests/api-smoke.php — isolated MariaDB tables; no live account is created.
 use App\Mail\PasswordRecovery;
+use App\Mail\ReservationDecision;
 use App\Mail\VolunteerInvitation;
 use App\Models\Edition;
 use App\Models\InvitationCode;
@@ -111,6 +112,16 @@ try {
     $same = $slot('09:00:00', '10:00:00', m: $other);
     $hidden = $slot('17:00:00', '18:00:00', m: $secret);
     $admin = User::factory()->create(['role' => 'admin']);
+    // Exercise the migration against pre-existing records, not just empty tables.
+    $legacyMigration = require __DIR__.'/../database/migrations/2026_09_24_000003_add_reservation_admin_validation.php';
+    $legacyMigration->down();
+    $legacySensitive = Reservation::create(['user_id' => $admin->id, 'creneau_id' => $hidden->id]);
+    $legacyNormal = Reservation::create(['user_id' => $admin->id, 'creneau_id' => $a->id]);
+    $legacyMigration->up();
+    $check($legacySensitive->fresh()->validation_admin === 'acceptee', 'Migration preserves old admin approvals');
+    $check($legacyNormal->fresh()->validation_admin === null, 'Migration leaves normal reservations untouched');
+    $legacySensitive->delete();
+    $legacyNormal->delete();
     $adminToken = $admin->createToken('test')->plainTextToken;
     $payload = ['nom' => 'Bénévole', 'prenom' => 'Élodie', 'email' => 'elodie@example.test', 'telephone' => '0600000000', 'password' => 'test-password', 'password_confirmation' => 'test-password', 'isMineur' => false];
 
@@ -160,10 +171,12 @@ try {
     $expect(409, $api('PATCH', '/api/admin/users/'.$admin->id.'/role', ['role' => 'benevole'], $adminToken), 'Cannot demote self');
     $expect(409, $api('POST', '/api/planning/valider', token: $token), 'Minimum one');
     $publicSlots = $expect(200, $api('GET', '/api/creneaux', token: $token), 'Public slots');
-    $check(! str_contains($publicSlots[2], 'Billetterie'), 'Sensitive mission excluded');
+    $check(str_contains($publicSlots[2], 'Billetterie'), 'Sensitive mission visible');
     $check(! str_contains($publicSlots[2], $admin->nom) && ! str_contains($publicSlots[2], 'email'), 'No other identity on slots');
     $check($publicSlots[1]['data'][0]['places_restantes'] === 10, 'Available places');
-    $expect(404, $api('POST', '/api/reservations', ['creneau_id' => $hidden->id], $token), 'Sensitive assignment hidden');
+    $temporary = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $hidden->id], $token), 'Sensitive request permitted')[1]['data'];
+    $check($temporary['validation_admin'] === 'en_attente', 'Sensitive request pending');
+    $expect(204, $api('DELETE', '/api/reservations/'.$temporary['id'], token: $token), 'Cancel draft pending request');
     $expect(422, $api('POST', '/api/reservations', ['creneau_id' => $a->id, 'user_id' => $admin->id], $token), 'Cannot assign other user');
     $r1 = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $a->id], $token), 'First booking')[1]['data']['id'];
     $expect(409, $api('POST', '/api/reservations', ['creneau_id' => $a->id], $token), 'Duplicate slot');
@@ -181,10 +194,11 @@ try {
     $hiddenReservation = $expect(201, $api('POST', '/api/admin/reservations', ['user_id' => $user->id, 'creneau_id' => $hidden->id], $adminToken), 'Manual sensitive assignment')[1]['data']['id'];
     $check(Reservation::find($hiddenReservation)->statut === 'valide', 'Admin assignment status coherent');
     $planning = $expect(200, $api('GET', '/api/planning', token: $token), 'Own planning');
-    $check(count($planning[1]['data']) === 2 && ! str_contains($planning[2], 'Billetterie'), 'Sensitive own booking hidden');
+    $check(count($planning[1]['data']) === 3 && str_contains($planning[2], 'Billetterie'), 'Sensitive own booking visible');
     $adminPlanning = $expect(200, $api('GET', '/api/admin/users/'.$user->id.'/planning', token: $adminToken), 'Admin planning');
     $check(count($adminPlanning[1]['data']) === 3 && str_contains($adminPlanning[2], 'Billetterie'), 'Admin sees sensitive');
-    $expect(404, $api('DELETE', '/api/reservations/'.$hiddenReservation, token: $token), 'Sensitive deletion concealed');
+    $expect(409, $api('DELETE', '/api/reservations/'.$hiddenReservation, token: $token), 'Accepted reservation locked');
+    $check(Reservation::find($hiddenReservation)->validation_admin === 'acceptee', 'Admin assignment accepted');
     $pdf = $expect(200, $api('GET', '/api/planning/pdf', token: $token), 'PDF');
     $check(str_starts_with($pdf[2], '%PDF-') && $pdf[3]->get('Content-Type') === 'application/pdf', 'Valid PDF response');
     file_put_contents(__DIR__.'/planning-test.pdf', $pdf[2]);
@@ -398,6 +412,64 @@ try {
         Mail::swap($originalMailManager);
         config(['mail.default' => $originalMailer]);
     }
+    $validationUser = User::factory()->create();
+    $validationToken = $validationUser->createToken('validation-test')->plainTextToken;
+    $reviewSlot = $slot('06:00:00', '07:00:00', capacity: 1, m: $secret);
+    $pending = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $reviewSlot->id], $validationToken), 'Request sensitive slot')[1]['data'];
+    $check($pending['validation_admin'] === 'en_attente' && $pending['creneau']['mission']['isSensible'] === true, 'Pending approval and sensitive marker');
+    $expect(409, $api('POST', '/api/reservations', ['creneau_id' => $reviewSlot->id], $strangerToken), 'Pending occupies last place');
+    $sensitiveOverlap = $slot('06:30:00', '07:30:00');
+    $expect(409, $api('POST', '/api/reservations', ['creneau_id' => $sensitiveOverlap->id], $validationToken), 'Pending prevents overlap');
+    $normal = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $a->id], $validationToken), 'Normal booking')[1]['data'];
+    $check($normal['validation_admin'] === null, 'Normal booking requires no approval');
+    $expect(409, $api('POST', '/api/reservations', ['creneau_id' => $same->id], $validationToken), 'Overlap still rejected');
+    $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $pause->id], $validationToken), 'Third with pending');
+    $expect(409, $api('POST', '/api/reservations', ['creneau_id' => $fourth->id], $validationToken), 'Pending counts for quota');
+    $expect(200, $api('POST', '/api/planning/valider', token: $validationToken), 'Validate pending planning');
+    $check(Reservation::find($pending['id'])->validation_admin === 'en_attente', 'Planning does not accept request');
+    $expect(403, $api('GET', '/api/admin/validations', token: $validationToken), 'Validation list admin only');
+    $expect(403, $api('PATCH', '/api/admin/reservations/'.$pending['id'].'/validation', ['decision' => 'acceptee'], $validationToken), 'Decision admin only');
+    $expect(422, $api('GET', '/api/admin/validations?statut=invalid', token: $adminToken), 'Invalid validation filter');
+    $list = $expect(200, $api('GET', '/api/admin/validations', token: $adminToken), 'Pending queue')[1]['data'];
+    $entry = collect($list)->firstWhere('id', $pending['id']);
+    $check($entry['user']['id'] === $validationUser->id && $entry['creneau']['places_restantes'] === 0 && $entry['created_at'] !== null, 'Queue identity capacity timestamp');
+    $bulkReview = $expect(200, $api('GET', '/api/admin/plannings?q='.rawurlencode($validationUser->email), token: $adminToken), 'Pending counter')[1]['data'][0];
+    $check($bulkReview['demandes_en_attente'] === 1, 'Pending count per user');
+    $expect(422, $api('PATCH', '/api/admin/reservations/'.$normal['id'].'/validation', ['decision' => 'acceptee'], $adminToken), 'Normal reservation cannot be reviewed');
+    $oldDecisionMailer = config('mail.default');
+    $decisionMailManager = Mail::getFacadeRoot();
+    config(['mail.default' => 'smtp']);
+    Mail::fake();
+    try {
+        $accepted = $expect(200, $api('PATCH', '/api/admin/reservations/'.$pending['id'].'/validation', ['decision' => 'acceptee'], $adminToken), 'Accept pending')[1]['data'];
+        $check($accepted['validation_admin'] === 'acceptee' && $accepted['statut'] === 'valide', 'Independent approval');
+        Mail::assertSent(ReservationDecision::class, 1);
+        $expect(422, $api('PATCH', '/api/admin/reservations/'.$pending['id'].'/validation', ['decision' => 'refusee'], $adminToken), 'Processed request rejected');
+        $expect(409, $api('DELETE', '/api/reservations/'.$pending['id'], token: $validationToken), 'Accepted validated request locked');
+        $expect(200, $api('POST', '/api/admin/users/'.$validationUser->id.'/planning/deverrouiller', token: $adminToken), 'Unlock for next scenario');
+        $expect(204, $api('DELETE', '/api/reservations/'.$pending['id'], token: $validationToken), 'Delete unlocked accepted');
+        $pending = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $reviewSlot->id], $validationToken), 'Request again')[1]['data'];
+        $expect(200, $api('POST', '/api/planning/valider', token: $validationToken), 'Revalidate pending');
+        Mail::shouldReceive('to')->andThrow(new RuntimeException('Simulated SMTP failure'));
+        $expect(200, $api('PATCH', '/api/admin/reservations/'.$pending['id'].'/validation', ['decision' => 'refusee'], $adminToken), 'Refuse despite email failure');
+        $check(! Reservation::find($pending['id']) && $reviewSlot->reservations()->count() === 0, 'Refusal frees place');
+        $check($validationUser->fresh()->statut_planning === 'brouillon', 'Refusal reopens planning');
+        $pending = $expect(201, $api('POST', '/api/reservations', ['creneau_id' => $reviewSlot->id], $validationToken), 'Replacement allowed after refusal')[1]['data'];
+        $expect(200, $api('POST', '/api/planning/valider', token: $validationToken), 'Validate before cancellation');
+        $expect(204, $api('DELETE', '/api/reservations/'.$pending['id'], token: $validationToken), 'Cancel pending despite validated planning');
+        $check($validationUser->fresh()->statut_planning === 'brouillon', 'Cancellation reopens planning');
+    } finally {
+        Mail::swap($decisionMailManager);
+        config(['mail.default' => $oldDecisionMailer]);
+    }
+    $validationUser->reservations()->delete();
+    $raceVolunteer = User::factory()->create();
+    $raceOther = User::factory()->create();
+    $check($race([['mode' => 'reserve', 'user' => $raceVolunteer->id, 'slot' => $reviewSlot->id], ['mode' => 'reserve', 'user' => $raceOther->id, 'slot' => $reviewSlot->id]]) === [201, 409], 'Concurrent sensitive last place');
+    $racePending = $reviewSlot->reservations()->firstOrFail();
+    $check($racePending->validation_admin === 'en_attente', 'Concurrent winner pending');
+    $check($race([['mode' => 'validation', 'user' => $admin->id, 'reservation' => $racePending->id], ['mode' => 'validation', 'user' => $admin->id, 'reservation' => $racePending->id]]) === [201, 422], 'Concurrent decision only once');
+    $racePending->delete();
     $resetUser = User::factory()->create();
     $resetSession = $resetUser->createToken('reset-test')->plainTextToken;
     $mailManager = Mail::getFacadeRoot();

@@ -20,10 +20,10 @@ class ExportService
             $slot = $reservation->creneau;
             $rows .= '<tr><td>'.$escape($slot->jour->format('d/m/Y')).'</td><td>'
                 .$escape(substr($slot->heure_debut, 0, 5).' - '.substr($slot->heure_fin, 0, 5))
-                .'</td><td>'.$escape($slot->mission->nom).'</td><td>'.$escape($reservation->statut).'</td></tr>';
+                .'</td><td>'.$escape($slot->mission->nom).'</td><td>'.$escape($reservation->statut.($reservation->validation_admin ? ' / '.str_replace('_', ' ', $reservation->validation_admin) : '')).'</td></tr>';
         }
         if ($rows === '') {
-            $rows = '<tr><td colspan="4">Aucun créneau public réservé.</td></tr>';
+            $rows = '<tr><td colspan="4">Aucun créneau réservé.</td></tr>';
         }
         $html = '<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>
             @page { margin: 45px; } body { font-family: DejaVu Sans, sans-serif; color: #243044; font-size: 11px; }

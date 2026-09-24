@@ -18,6 +18,7 @@ class UserResource extends JsonResource
             'role' => $this->role,
             'isMineur' => $this->isMineur,
             'statut_planning' => $this->statut_planning,
+            'demandes_en_attente' => $this->whenHas('demandes_en_attente'),
             'photo_url' => $this->photo_path && str_starts_with($this->photo_path, 'photos/')
                 ? ($request->is('api/admin/*') ? '/api/admin/users/'.$this->id.'/photo' : '/api/me/photo') : null,
         ];

@@ -1,11 +1,14 @@
 <?php
 
 use App\Exceptions\BusinessRuleException;
+use App\Mail\VolunteerInvitation;
 use App\Models\User;
 use App\Services\AuthService;
+use App\Services\InvitationService;
 use App\Services\ReservationService;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 
 require __DIR__.'/../vendor/autoload.php';
@@ -26,11 +29,14 @@ fgets(STDIN);
 try {
     if ($job['mode'] === 'register') {
         app(AuthService::class)->register($job['data']);
+    } elseif ($job['mode'] === 'validation') {
+        Mail::fake();
+        app(ReservationService::class)->decide(User::findOrFail($job['user']), $job['reservation'], 'acceptee');
     } elseif ($job['mode'] === 'invitation') {
         config(['mail.default' => 'smtp']);
-        Illuminate\Support\Facades\Mail::fake();
-        app(App\Services\InvitationService::class)->send(User::findOrFail($job['user']), $job['email']);
-        echo Illuminate\Support\Facades\Mail::sent(App\Mail\VolunteerInvitation::class)->count() === 1 ? "201\n" : "200\n";
+        Mail::fake();
+        app(InvitationService::class)->send(User::findOrFail($job['user']), $job['email']);
+        echo Mail::sent(VolunteerInvitation::class)->count() === 1 ? "201\n" : "200\n";
         exit(0);
     } else {
         app(ReservationService::class)->create(User::findOrFail($job['user']), $job['slot']);

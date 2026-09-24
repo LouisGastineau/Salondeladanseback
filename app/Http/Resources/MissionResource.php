@@ -13,7 +13,7 @@ class MissionResource extends JsonResource
             'id' => $this->id,
             'edition_id' => $this->edition_id,
             'nom' => $this->nom,
-            'isSensible' => $this->when($request->is('api/admin/*') && $request->user()?->role === 'admin', $this->isSensible),
+            'isSensible' => $this->isSensible,
         ];
     }
 }

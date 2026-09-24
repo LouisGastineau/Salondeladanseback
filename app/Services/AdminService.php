@@ -25,7 +25,7 @@ class AdminService
     {
         $this->authorize($actor);
 
-        return User::query()
+        return User::query()->withCount(['reservations as demandes_en_attente' => fn ($q) => $q->where('validation_admin', 'en_attente')])
             ->when(isset($filters['q']), function ($query) use ($filters) {
                 $term = '%'.addcslashes($filters['q'], '%_\\').'%';
                 $query->where(fn ($q) => $q->where('nom', 'like', $term)->orWhere('prenom', 'like', $term)->orWhere('email', 'like', $term));

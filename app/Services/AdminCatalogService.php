@@ -121,7 +121,11 @@ class AdminCatalogService
             if ($mission->exists && isset($data['edition_id']) && (int) $data['edition_id'] !== $mission->edition_id && $mission->creneaux()->exists()) {
                 throw new BusinessRuleException('Une mission contenant des créneaux ne peut pas changer d’édition.');
             }
-            $mission->fill($data)->save();
+            $mission->fill($data);
+            if ($mission->isDirty('isSensible') && $mission->exists && $mission->creneaux()->whereHas('reservations')->exists()) {
+                throw new BusinessRuleException('Retirez les réservations avant de modifier la sensibilité de cette mission.');
+            }
+            $mission->save();
 
             return $mission->load('edition');
         }, 3);

@@ -12,6 +12,8 @@ class ReservationResource extends JsonResource
         return [
             'id' => $this->id,
             'statut' => $this->statut,
+            'validation_admin' => $this->validation_admin,
+            'created_at' => $this->created_at?->toISOString(),
             'user_id' => $this->when($request->is('api/admin/*') && $request->user()?->role === 'admin', $this->user_id),
             'creneau' => new CreneauResource($this->whenLoaded('creneau')),
         ];

@@ -12,6 +12,7 @@ class CreneauParticipantResource extends JsonResource
         return [
             'id' => $this->id,
             'statut' => $this->statut,
+            'validation_admin' => $this->validation_admin,
             'user' => new UserResource($this->whenLoaded('user')),
         ];
     }

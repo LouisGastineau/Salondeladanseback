@@ -24,6 +24,7 @@ class AdminPlanningService
         ])->get();
 
         foreach ($users as $user) {
+            $user->demandes_en_attente = $user->reservations->where('validation_admin', 'en_attente')->count();
             $user->statut_planning = $user->reservations->isNotEmpty() && $user->reservations->every(fn ($r) => $r->statut === 'valide') ? 'valide' : 'brouillon';
             $user->setRelation('reservations', $user->reservations->sortBy([
                 fn ($a, $b) => $a->creneau->jour <=> $b->creneau->jour,

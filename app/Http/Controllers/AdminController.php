@@ -18,7 +18,10 @@ use App\Http\Requests\StoreMissionRequest;
 use App\Http\Requests\UpdateCreneauRequest;
 use App\Http\Requests\UpdateEditionRequest;
 use App\Http\Requests\UpdateMissionRequest;
+use App\Http\Requests\ValidationDecisionRequest;
+use App\Http\Requests\ValidationIndexRequest;
 use App\Http\Resources\AdminPlanningResource;
+use App\Http\Resources\AdminValidationResource;
 use App\Http\Resources\CreneauParticipantResource;
 use App\Http\Resources\CreneauResource;
 use App\Http\Resources\EditionResource;
@@ -52,6 +55,18 @@ class AdminController extends Controller
     public function creneau(Request $request, int $id, AdminCatalogService $service): CreneauResource
     {
         return new CreneauResource($service->creneau($request->user(), $id));
+    }
+
+    public function validations(ValidationIndexRequest $request, ReservationService $service): AnonymousResourceCollection
+    {
+        return AdminValidationResource::collection($service->validations($request->user(), $request->validated()));
+    }
+
+    public function decideValidation(ValidationDecisionRequest $request, int $id, ReservationService $service)
+    {
+        $reservation = $service->decide($request->user(), $id, $request->validated('decision'));
+
+        return $reservation ? new ReservationResource($reservation) : response()->json(['message' => 'Demande refusée. La place a été libérée et le planning est à nouveau modifiable.']);
     }
 
     public function editions(Request $request, AdminCatalogService $service): AnonymousResourceCollection

@@ -17,6 +17,7 @@ class CreateReservationRequest extends FormRequest
             'creneau_id' => ['required', 'integer', 'min:1'],
             'user_id' => ['prohibited'],
             'statut' => ['prohibited'],
+            'validation_admin' => ['prohibited'],
         ];
     }
 }

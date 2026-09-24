@@ -3,11 +3,15 @@
 namespace App\Services;
 
 use App\Exceptions\BusinessRuleException;
+use App\Mail\ReservationDecision;
 use App\Models\Creneau;
+use App\Models\Edition;
 use App\Models\Reservation;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\ValidationException;
 
 class ReservationService
 {
@@ -28,9 +32,6 @@ class ReservationService
             $edition = $this->editions->active();
             $slot = Creneau::whereKey($creneauId)->lockForUpdate()->firstOrFail();
             $slot->load('mission');
-            if (! $admin && $slot->mission->isSensible) {
-                abort(404);
-            }
             if ($slot->mission->edition_id !== $edition->id) {
                 throw new BusinessRuleException('Ce créneau ne fait pas partie de l’édition active.');
             }
@@ -47,6 +48,8 @@ class ReservationService
 
             $reservation = new Reservation(['user_id' => $user->id, 'creneau_id' => $slot->id]);
             $reservation->statut = $user->statut_planning;
+            $reservation->validation_admin = $slot->mission->isSensible ? ($admin ? Reservation::ACCEPTEE : Reservation::EN_ATTENTE) : null;
+            $reservation->created_at = now();
             $reservation->save();
 
             return $reservation->load('creneau.mission');
@@ -65,20 +68,21 @@ class ReservationService
             $user = User::whereKey($reference->user_id)->lockForUpdate()->firstOrFail();
             $slot = Creneau::whereKey($reference->creneau_id)->lockForUpdate()->firstOrFail();
             $slot->load('mission');
-            if (! $admin && $slot->mission->isSensible) {
-                abort(404);
-            }
-            $this->assertEditable($user, $admin);
             $reservation = Reservation::whereKey($reservationId)->lockForUpdate()->firstOrFail();
+            $pending = $reservation->validation_admin === Reservation::EN_ATTENTE;
+            $this->assertEditable($user, $admin || $pending);
             $edition = $this->editions->active();
             if ($slot->mission->edition_id !== $edition->id) {
                 throw new BusinessRuleException('Ce planning appartient à une édition inactive.');
             }
-            if ($admin && $user->statut_planning === User::PLANNING_VALIDE
+            if ($admin && ! $pending && $user->statut_planning === User::PLANNING_VALIDE
                 && $this->forEdition($user, $edition->id)->count() <= 1) {
                 throw new BusinessRuleException('Déverrouillez le planning avant de supprimer sa dernière réservation.');
             }
             $reservation->delete();
+            if ($pending) {
+                $this->reopenAfterRemoval($user, $edition->id);
+            }
         }, 3);
     }
 
@@ -118,6 +122,66 @@ class ReservationService
 
             return $user;
         }, 3);
+    }
+
+    public function validations(User $actor, array $filters)
+    {
+        $this->assertAdmin($actor);
+
+        return Reservation::whereHas('creneau.mission', fn ($q) => $q->where('isSensible', true))
+            ->where('validation_admin', $filters['statut'] ?? Reservation::EN_ATTENTE)
+            ->with(['user', 'creneau' => fn ($q) => $q->with('mission')->withCount('reservations')])
+            ->orderBy('created_at')->orderBy('id')->paginate($filters['per_page'] ?? 50)->withQueryString();
+    }
+
+    public function decide(User $actor, int $id, string $decision): ?Reservation
+    {
+        $this->assertAdmin($actor);
+        if (! in_array($decision, [Reservation::ACCEPTEE, Reservation::REFUSEE], true)) {
+            throw ValidationException::withMessages(['decision' => 'Décision invalide.']);
+        }
+        $reference = Reservation::findOrFail($id);
+        $notification = null;
+        $result = DB::transaction(function () use ($reference, $id, $decision, &$notification) {
+            $user = User::whereKey($reference->user_id)->lockForUpdate()->firstOrFail();
+            $slot = Creneau::whereKey($reference->creneau_id)->lockForUpdate()->firstOrFail();
+            $slot->load('mission');
+            $reservation = Reservation::whereKey($id)->lockForUpdate()->first();
+            if (! $reservation || ! $slot->mission->isSensible || $reservation->validation_admin !== Reservation::EN_ATTENTE) {
+                throw ValidationException::withMessages(['decision' => 'Cette réservation ne nécessite pas de validation ou a déjà été traitée.']);
+            }
+            $notification = [$user->email, new ReservationDecision($slot->mission->nom, $slot->jour->format('d/m/Y'), substr($slot->heure_debut, 0, 5), substr($slot->heure_fin, 0, 5), $decision)];
+            if ($decision === Reservation::REFUSEE) {
+                $reservation->delete();
+                $this->reopenAfterRemoval($user, $slot->mission->edition_id);
+
+                return null;
+            }
+            $reservation->validation_admin = Reservation::ACCEPTEE;
+            $reservation->save();
+
+            return $reservation->load(['creneau' => fn ($q) => $q->with('mission')->withCount('reservations')]);
+        }, 3);
+        // SMTP runs after commit: delivery failure must not roll back the decision.
+        if ($notification && config('mail.mailers.'.config('mail.default').'.transport') === 'smtp') {
+            try {
+                Mail::to($notification[0])->send($notification[1]);
+            } catch (\Throwable $exception) { /* The recorded decision remains authoritative. */
+            }
+        }
+
+        return $result;
+    }
+
+    private function reopenAfterRemoval(User $user, int $editionId): void
+    {
+        // A removed pending request means the volunteer must be able to select a replacement.
+        $reservations = $this->forEdition($user, $editionId);
+        Reservation::whereIn('id', $reservations->modelKeys())->update(['statut' => Reservation::STATUT_BROUILLON]);
+        if (Edition::whereKey($editionId)->where('isActive', true)->exists()) {
+            $user->statut_planning = User::PLANNING_BROUILLON;
+            $user->save();
+        }
     }
 
     private function forEdition(User $user, int $editionId): Collection

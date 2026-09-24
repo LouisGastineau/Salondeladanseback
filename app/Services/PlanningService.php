@@ -15,8 +15,7 @@ class PlanningService
     public function slots(array $filters, bool $admin = false): LengthAwarePaginator
     {
         return Creneau::query()
-            ->whereHas('mission', fn ($q) => $q->where('edition_id', $this->editions->active()->id)
-                ->when(! $admin, fn ($q) => $q->where('isSensible', false)))
+            ->whereHas('mission', fn ($q) => $q->where('edition_id', $this->editions->active()->id))
             ->when(isset($filters['jour']), fn ($q) => $q->whereDate('jour', $filters['jour']))
             ->when(isset($filters['mission_id']), fn ($q) => $q->where('mission_id', $filters['mission_id']))
             ->with('mission')->withCount('reservations')
@@ -27,8 +26,7 @@ class PlanningService
     public function reservations(User $user, bool $admin = false): Collection
     {
         return Reservation::where('user_id', $user->id)
-            ->whereHas('creneau.mission', fn ($q) => $q->where('edition_id', $this->editions->active()->id)
-                ->when(! $admin, fn ($q) => $q->where('isSensible', false)))
+            ->whereHas('creneau.mission', fn ($q) => $q->where('edition_id', $this->editions->active()->id))
             ->with('creneau.mission')->get()->sortBy([
                 fn ($a, $b) => $a->creneau->jour <=> $b->creneau->jour,
                 fn ($a, $b) => $a->creneau->heure_debut <=> $b->creneau->heure_debut,
