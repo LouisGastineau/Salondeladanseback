@@ -25,7 +25,13 @@ php artisan config:cache
 php artisan route:cache
 # Backup runs as root through a fixed, narrowly scoped sudo command.
 sudo /usr/local/sbin/salon-backup
-php artisan migrate --force --no-interaction
+# The migration credential is outside the application tree and unreadable by PHP-FPM.
+(
+    source /home/deploy/.config/salon/migrations.env
+    export DB_USERNAME DB_PASSWORD
+    export APP_CONFIG_CACHE="$release/bootstrap/cache/migrations-uncached.php"
+    php artisan migrate --force --no-interaction
+)
 previous=$(readlink -f "$base/current" || true)
 ln -s "$release" "$base/current.next"
 mv -Tf "$base/current.next" "$base/current"

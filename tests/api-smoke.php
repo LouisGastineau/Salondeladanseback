@@ -154,6 +154,8 @@ try {
         $check(! array_key_exists($key, $me[1]['data']), 'Hidden '.$key);
     }
     $expect(405, $api('PATCH', '/api/me', ['nom' => 'Changed'], $token), 'No volunteer profile mutation');
+    $injection = $expect(200, $api('GET', '/api/admin/users?q='.rawurlencode("' OR 1=1 --"), token: $adminToken), 'Search treats SQL syntax as data');
+    $check($injection[1]['meta']['total'] === 0, 'Search cannot inject an SQL predicate');
     $expect(403, $api('PATCH', '/api/admin/users/'.$user->id, ['nom' => 'Changed'], $token), 'Admin update protected');
     foreach (['/api/admin/users', '/api/admin/export', '/api/admin/creneaux', '/api/admin/users/'.$user->id.'/planning'] as $uri) {
         $expect(403, $api('GET', $uri, token: $token), 'Admin protected '.$uri);

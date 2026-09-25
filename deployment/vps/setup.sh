@@ -32,7 +32,7 @@ if not p.exists():
     password = secrets.token_hex(32)
     sql = "CREATE DATABASE IF NOT EXISTS salon_danse CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n"
     sql += f"CREATE USER IF NOT EXISTS 'salon_app'@'127.0.0.1' IDENTIFIED BY '{password}';\n"
-    sql += "GRANT ALL PRIVILEGES ON salon_danse.* TO 'salon_app'@'127.0.0.1';\n"
+    sql += "GRANT SELECT, INSERT, UPDATE, DELETE ON salon_danse.* TO 'salon_app'@'127.0.0.1';\n"
     subprocess.run(['mariadb'], input=sql, text=True, check=True)
     p.write_text('\n'.join([
         'APP_NAME="Salon de la Danse"', 'APP_ENV=production',
