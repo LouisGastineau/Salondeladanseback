@@ -52,7 +52,9 @@ class ReservationService
             $reservation->created_at = now();
             $reservation->save();
 
-            return $reservation->load('creneau.mission');
+            app(EmailNotificationService::class)->reservation($reservation->load('creneau.mission'));
+
+            return $reservation;
         }, 3);
     }
 
@@ -102,7 +104,11 @@ class ReservationService
             $this->assertSchedule($reservations->pluck('creneau'));
             $user->statut_planning = User::PLANNING_VALIDE;
             $user->save();
-            Reservation::whereIn('id', $reservations->modelKeys())->update(['statut' => Reservation::STATUT_VALIDE]);
+            foreach ($reservations as $reservation) {
+                $reservation->statut = Reservation::STATUT_VALIDE;
+                $reservation->save();
+            }
+            app(EmailNotificationService::class)->planning($user, $edition->id);
 
             return $user;
         }, 3);
@@ -118,7 +124,10 @@ class ReservationService
             $reservations = $this->forEdition($user, $edition->id);
             $user->statut_planning = User::PLANNING_BROUILLON;
             $user->save();
-            Reservation::whereIn('id', $reservations->modelKeys())->update(['statut' => Reservation::STATUT_BROUILLON]);
+            foreach ($reservations as $reservation) {
+                $reservation->statut = Reservation::STATUT_BROUILLON;
+                $reservation->save();
+            }
 
             return $user;
         }, 3);
@@ -177,7 +186,10 @@ class ReservationService
     {
         // A removed pending request means the volunteer must be able to select a replacement.
         $reservations = $this->forEdition($user, $editionId);
-        Reservation::whereIn('id', $reservations->modelKeys())->update(['statut' => Reservation::STATUT_BROUILLON]);
+        foreach ($reservations as $reservation) {
+            $reservation->statut = Reservation::STATUT_BROUILLON;
+            $reservation->save();
+        }
         if (Edition::whereKey($editionId)->where('isActive', true)->exists()) {
             $user->statut_planning = User::PLANNING_BROUILLON;
             $user->save();

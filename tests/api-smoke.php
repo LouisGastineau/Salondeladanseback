@@ -4,13 +4,16 @@
 use App\Mail\PasswordRecovery;
 use App\Mail\ReservationDecision;
 use App\Mail\VolunteerInvitation;
+use App\Mail\VolunteerNotification;
 use App\Models\Edition;
 use App\Models\InvitationCode;
 use App\Models\Reservation;
 use App\Models\User;
+use App\Services\EmailNotificationService;
 use App\Services\InvitationCsvService;
 use App\Services\InvitationService;
 use App\Services\ReservationService;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Bootstrap\BootProviders;
@@ -531,9 +534,91 @@ try {
     $expect(204, $api('DELETE', '/api/admin/creneaux/'.$catalogSlot['id'], token: $adminToken), 'Delete slot');
     $expect(204, $api('DELETE', '/api/admin/missions/'.$catalogMission['id'], token: $adminToken), 'Delete mission');
     $expect(204, $api('DELETE', '/api/admin/editions/'.$catalogEdition['id'], token: $adminToken), 'Delete edition');
+    $expect(403, $api('GET', '/api/admin/historique', token: $strangerToken), 'History admin only');
+    $expect(401, $api('GET', '/api/admin/historique'), 'History requires auth');
+    $expect(422, $api('GET', '/api/admin/historique?per_page=200', token: $adminToken), 'History pagination bounded');
+    $history = $expect(200, $api('GET', '/api/admin/historique?entite=creneaux&entite_id='.$catalogSlot['id'], token: $adminToken), 'Slot history')[1]['data'];
+    $check(collect($history)->contains('action', 'creation') && collect($history)->contains('action', 'suppression'), 'History persists after deletion');
+    $capacityHistory = collect($history)->first(fn ($h) => isset($h['apres']['capacite_max']) && $h['action'] === 'modification');
+    $check($capacityHistory['avant']['capacite_max'] === 4 && $capacityHistory['apres']['capacite_max'] === 8 && $capacityHistory['admin_id'] === $admin->id, 'History before after and actor');
+    $allHistory = DB::table('admin_histories')->get()->toJson();
+    $check(! str_contains($allHistory, 'password') && ! str_contains($allHistory, 'code_invitation') && ! str_contains($allHistory, 'Bearer'), 'Audit excludes secrets');
+    $beforeHistory = DB::table('admin_histories')->count();
+    DB::beginTransaction();
+    $expect(200, $api('PATCH', '/api/admin/users/'.$user->id, ['nom' => 'Rollback test'], $adminToken), 'Audit transaction write');
+    DB::rollBack();
+    $check(DB::table('admin_histories')->count() === $beforeHistory, 'Rollback leaves no audit change');
+
+    DB::table('email_notifications')->delete();
+    $notificationService = app(EmailNotificationService::class);
+    $notificationMailer = config('mail.default');
+    $notificationManager = Mail::getFacadeRoot();
+    config(['mail.default' => 'smtp']);
+    Mail::fake();
+    try {
+        Edition::query()->update(['isActive' => false]);
+        $edition = Edition::create(['nom' => 'Rappels', 'date_debut' => '2026-10-09', 'date_fin' => '2026-10-11', 'isActive' => true]);
+        $reminderMission = $edition->missions()->create(['nom' => 'Accueil', 'isSensible' => false]);
+        $reminderSecret = $edition->missions()->create(['nom' => 'Billetterie', 'isSensible' => true]);
+        $a = $slot('09:00:00', '10:00:00', m: $reminderMission);
+        $hidden = $slot('11:00:00', '12:00:00', m: $reminderSecret);
+        $reviewSlot = $slot('13:00:00', '14:00:00', m: $reminderSecret);
+        $pause = $slot('15:00:00', '16:00:00', m: $reminderMission);
+        $reminderUser = User::factory()->create(['statut_planning' => 'valide']);
+        $reminderNormal = Reservation::create(['user_id' => $reminderUser->id, 'creneau_id' => $a->id]);
+        $reminderNormal->statut = 'valide';
+        $reminderNormal->save();
+        $reminderAccepted = Reservation::create(['user_id' => $reminderUser->id, 'creneau_id' => $hidden->id]);
+        $reminderAccepted->statut = 'valide';
+        $reminderAccepted->validation_admin = 'acceptee';
+        $reminderAccepted->save();
+        $reminderPending = Reservation::create(['user_id' => $reminderUser->id, 'creneau_id' => $reviewSlot->id]);
+        $reminderPending->statut = 'valide';
+        $reminderPending->validation_admin = 'en_attente';
+        $reminderPending->save();
+        $reminderDraft = Reservation::create(['user_id' => $reminderUser->id, 'creneau_id' => $pause->id]);
+        CarbonImmutable::setTestNow('2026-10-08T15:59:00Z');
+        $notificationService->process();
+        Mail::assertNothingSent();
+        CarbonImmutable::setTestNow('2026-10-08T16:00:00Z');
+        $notificationService->process();
+        $check(Mail::sent(VolunteerNotification::class)->count() === 2, 'Expected 2 emails, got '.Mail::sent(VolunteerNotification::class)->count());
+        $check(DB::table('email_notifications')->where('type', 'rappel')->where('statut', 'envoyee')->count() === 2, 'Reminders only confirmed validated at 18 Paris');
+        $notificationService->process();
+        $check(Mail::sent(VolunteerNotification::class)->count() === 2, 'Expected 2 emails, got '.Mail::sent(VolunteerNotification::class)->count());
+        $notificationService->registration($reminderUser);
+        $notificationService->registration($reminderUser);
+        $check(Mail::sent(VolunteerNotification::class)->count() === 3, 'Expected 3 emails, got '.Mail::sent(VolunteerNotification::class)->count());
+        $notificationService->planning($reminderUser, $edition->id);
+        $notificationService->planning($reminderUser, $edition->id);
+        $check(Mail::sent(VolunteerNotification::class)->count() === 4, 'Expected 4 emails, got '.Mail::sent(VolunteerNotification::class)->count());
+        $check(DB::table('email_notifications')->where('type', 'planning')->count() === 1, 'Planning confirmation deduplicated');
+        $rendered = Mail::sent(VolunteerNotification::class)->last()->render();
+        $check(str_contains($rendered, 'En attente de validation'), 'Pending explicitly labelled in email');
+        Mail::shouldReceive('to')->andThrow(new RuntimeException('SMTP unavailable'));
+        $failed = $notificationService->record($reminderUser, 'test', 'smtp-failure', ['titre' => 'Test', 'message' => 'Test']);
+        $check($failed->fresh()->statut === 'echec', 'SMTP failure recorded without throwing');
+        Mail::swap($notificationManager);
+        Mail::fake();
+        $notificationService->process();
+        $check($failed->fresh()->statut === 'envoyee' && $failed->fresh()->tentatives === 2, 'Failed email retried');
+        $beforeNotifications = DB::table('email_notifications')->count();
+        DB::beginTransaction();
+        $notificationService->record($reminderUser, 'test', 'rollback-email', ['titre' => 'Test', 'message' => 'Test']);
+        DB::rollBack();
+        $check(DB::table('email_notifications')->count() === $beforeNotifications, 'Rolled back notification not persisted');
+        $check(Mail::sent(VolunteerNotification::class)->count() === 1, 'No email before commit');
+        $concurrentRecipient = User::factory()->create();
+        $check($race([['mode' => 'notification', 'user' => $concurrentRecipient->id], ['mode' => 'notification', 'user' => $concurrentRecipient->id]]) === [200, 201], 'Concurrent confirmation only once');
+        $reminderUser->reservations()->delete();
+    } finally {
+        CarbonImmutable::setTestNow();
+        Mail::swap($notificationManager);
+        config(['mail.default' => $notificationMailer]);
+    }
 } finally {
     // Delete only data in this run's uniquely prefixed tables before rollback.
-    foreach (['password_reset_tokens', 'personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {
+    foreach (['admin_histories', 'email_notifications', 'password_reset_tokens', 'personal_access_tokens', 'reservations', 'users', 'invitation_codes', 'creneaux', 'missions', 'editions'] as $table) {
         if (Schema::hasTable($table)) {
             DB::table($table)->delete();
         }

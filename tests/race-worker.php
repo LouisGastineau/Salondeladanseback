@@ -2,8 +2,10 @@
 
 use App\Exceptions\BusinessRuleException;
 use App\Mail\VolunteerInvitation;
+use App\Mail\VolunteerNotification;
 use App\Models\User;
 use App\Services\AuthService;
+use App\Services\EmailNotificationService;
 use App\Services\InvitationService;
 use App\Services\ReservationService;
 use Illuminate\Contracts\Console\Kernel;
@@ -29,6 +31,12 @@ fgets(STDIN);
 try {
     if ($job['mode'] === 'register') {
         app(AuthService::class)->register($job['data']);
+    } elseif ($job['mode'] === 'notification') {
+        config(['mail.default' => 'smtp']);
+        Mail::fake();
+        app(EmailNotificationService::class)->registration(User::findOrFail($job['user']));
+        echo Mail::sent(VolunteerNotification::class)->count() === 1 ? "201\n" : "200\n";
+        exit(0);
     } elseif ($job['mode'] === 'validation') {
         Mail::fake();
         app(ReservationService::class)->decide(User::findOrFail($job['user']), $job['reservation'], 'acceptee');

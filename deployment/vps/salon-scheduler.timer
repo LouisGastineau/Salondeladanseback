@@ -1,0 +1,8 @@
+[Unit]
+Description=Run Salon Laravel scheduler every minute
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

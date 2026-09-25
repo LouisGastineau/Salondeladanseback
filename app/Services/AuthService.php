@@ -34,6 +34,8 @@ class AuthService
                 $code->isActive = false;
                 $code->save();
 
+                app(EmailNotificationService::class)->registration($user);
+
                 return ['user' => $user->refresh(), 'token' => $user->createToken('front')->plainTextToken];
             }, 3);
         } catch (\Throwable $exception) {

@@ -9,6 +9,7 @@ use App\Http\Requests\AdminUserIndexRequest;
 use App\Http\Requests\ChangeUserRoleRequest;
 use App\Http\Requests\CreateInvitationCodesRequest;
 use App\Http\Requests\CreneauIndexRequest;
+use App\Http\Requests\HistoryIndexRequest;
 use App\Http\Requests\ImportInvitationsRequest;
 use App\Http\Requests\InvitationIndexRequest;
 use App\Http\Requests\SendInvitationRequest;
@@ -20,6 +21,7 @@ use App\Http\Requests\UpdateEditionRequest;
 use App\Http\Requests\UpdateMissionRequest;
 use App\Http\Requests\ValidationDecisionRequest;
 use App\Http\Requests\ValidationIndexRequest;
+use App\Http\Resources\AdminHistoryResource;
 use App\Http\Resources\AdminPlanningResource;
 use App\Http\Resources\AdminValidationResource;
 use App\Http\Resources\CreneauParticipantResource;
@@ -32,6 +34,7 @@ use App\Http\Resources\ReservationResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Services\AdminCatalogService;
+use App\Services\AdminHistoryService;
 use App\Services\AdminPlanningService;
 use App\Services\AdminService;
 use App\Services\ExportService;
@@ -67,6 +70,11 @@ class AdminController extends Controller
         $reservation = $service->decide($request->user(), $id, $request->validated('decision'));
 
         return $reservation ? new ReservationResource($reservation) : response()->json(['message' => 'Demande refusée. La place a été libérée et le planning est à nouveau modifiable.']);
+    }
+
+    public function history(HistoryIndexRequest $request, AdminHistoryService $service)
+    {
+        return AdminHistoryResource::collection($service->index($request->user(), $request->validated()));
     }
 
     public function editions(Request $request, AdminCatalogService $service): AnonymousResourceCollection

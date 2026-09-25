@@ -1,0 +1,10 @@
+[Unit]
+Description=Laravel scheduler for Salon de la Danse
+After=network-online.target mariadb.service
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/var/www/back/current
+ExecStart=/usr/bin/php /var/www/back/current/artisan schedule:run
+TimeoutStartSec=240

@@ -25,6 +25,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::get('planning/pdf', [PlanningController::class, 'pdf']);
 
     Route::prefix('admin')->middleware('role:admin')->group(function () {
+        Route::get('historique', [AdminController::class, 'history']);
         Route::get('validations', [AdminController::class, 'validations']);
         Route::patch('reservations/{id}/validation', [AdminController::class, 'decideValidation'])->whereNumber('id');
         Route::get('users', [AdminController::class, 'users']);

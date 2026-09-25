@@ -33,7 +33,7 @@ class AdminCatalogService
 
         return DB::transaction(function () use ($data, $id) {
             // Same owner-first locking order as reservation writers. Serializes edition switches.
-            User::orderBy('id')->lockForUpdate()->get();
+            $users = User::orderBy('id')->lockForUpdate()->get();
             $editions = Edition::orderBy('id')->lockForUpdate()->get();
             $edition = $id === null ? new Edition : $editions->firstWhere('id', $id);
             abort_unless($edition, 404);
@@ -54,18 +54,23 @@ class AdminCatalogService
                 $edition->isActive = false;
             }
             if ($edition->isActive) {
-                Edition::where('isActive', true)->update(['isActive' => false]);
-                $edition->isActive = false;
-                $edition->syncOriginalAttribute('isActive');
-                $edition->isActive = true;
+                foreach ($editions as $otherEdition) {
+                    if ($otherEdition->id !== $edition->id && $otherEdition->isActive) {
+                        $otherEdition->isActive = false;
+                        $otherEdition->save();
+                    }
+                }
+
             }
             $edition->save();
             if ($edition->isActive || $wasActive) {
                 $validated = $edition->isActive ? Reservation::whereHas('creneau.mission', fn ($q) => $q->where('edition_id', $edition->id))
                     ->select('user_id')->groupBy('user_id')->havingRaw("COUNT(*) = SUM(statut = 'valide')")->pluck('user_id')->all() : [];
                 // Reservation statuses retain the history; users mirrors the active edition only.
-                User::query()->update(['statut_planning' => User::PLANNING_BROUILLON]);
-                User::whereIn('id', $validated)->update(['statut_planning' => User::PLANNING_VALIDE]);
+                foreach ($users as $user) {
+                    $user->statut_planning = in_array($user->id, $validated) ? User::PLANNING_VALIDE : User::PLANNING_BROUILLON;
+                    $user->save();
+                }
             }
 
             return $edition->load('missions');
@@ -76,7 +81,7 @@ class AdminCatalogService
     {
         $this->authorize($actor);
         try {
-            Edition::whereKey($id)->firstOrFail()->delete();
+            DB::transaction(fn () => Edition::whereKey($id)->lockForUpdate()->firstOrFail()->delete(), 3);
         } catch (QueryException $exception) {
             if (($exception->errorInfo[1] ?? null) !== 1451) {
                 throw $exception;
@@ -135,7 +140,7 @@ class AdminCatalogService
     {
         $this->authorize($actor);
         try {
-            Mission::whereKey($id)->firstOrFail()->delete();
+            DB::transaction(fn () => Mission::whereKey($id)->lockForUpdate()->firstOrFail()->delete(), 3);
         } catch (QueryException $exception) {
             if (($exception->errorInfo[1] ?? null) !== 1451) {
                 throw $exception;
@@ -197,7 +202,7 @@ class AdminCatalogService
     {
         $this->authorize($actor);
         try {
-            Creneau::whereKey($id)->firstOrFail()->delete();
+            DB::transaction(fn () => Creneau::whereKey($id)->lockForUpdate()->firstOrFail()->delete(), 3);
         } catch (QueryException $exception) {
             if (($exception->errorInfo[1] ?? null) !== 1451) {
                 throw $exception;
